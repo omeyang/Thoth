@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# adversarial-review pre-commit hook (装于 .git/hooks/pre-commit)
+set -euo pipefail
+
+THOTH="${THOTH_HOME:-/root/code/ai/github.com/omeyang/Thoth}"
+REVIEW_SCRIPT="$THOTH/workflows/adversarial-review/scripts/review-diff.sh"
+
+[[ -x "$REVIEW_SCRIPT" ]] || {
+  echo "✗ adversarial-review: $REVIEW_SCRIPT not executable" >&2
+  echo "  set THOTH_HOME or fix path" >&2
+  exit 0  # 找不到工具不阻断 commit
+}
+
+# 跳过 merge / rebase / cherry-pick
+if [[ -f "$(git rev-parse --git-dir)/MERGE_HEAD" \
+   || -d "$(git rev-parse --git-dir)/rebase-merge" \
+   || -d "$(git rev-parse --git-dir)/rebase-apply" \
+   || -f "$(git rev-parse --git-dir)/CHERRY_PICK_HEAD" ]]; then
+  exit 0
+fi
+
+# 重入保护
+[[ "${AIREVIEW_RUNNING:-}" == "1" ]] && exit 0
+
+"$REVIEW_SCRIPT" || RC=$?
+# RC unset means review-diff.sh exited 0 (allow commit)
+RC="${RC:-0}"
+# exit 3 = skip (empty diff / all paths skipped / diff too large) → allow commit
+[[ "$RC" -eq 3 ]] && exit 0
+exit "$RC"

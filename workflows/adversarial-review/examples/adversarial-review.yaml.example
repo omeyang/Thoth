@@ -1,0 +1,55 @@
+# 对抗审查配置范本
+# 复制本文件到项目根：cp examples/adversarial-review.yaml.example .adversarial-review.yaml
+# 然后按项目情况编辑
+
+repo:
+  root: .                              # 项目根（相对/绝对路径都行）
+  search_dirs: [pkg, cmd, internal]    # review-target 自动定位 TARGET 时找的目录
+  search_maxdepth: 3                   # find -maxdepth
+
+llm:
+  # claude_model: 留空 = 继承 ~/.claude/settings.json 的当前模型（推荐）
+  #   只在需要把某个项目钉死在特定模型时才填，填了就得跟着模型换代维护
+  claude_model: ""
+  codex_command: codex
+  parallel_codex: true
+
+review:
+  dimensions:                          # 注入到 codex/claude prompt 的扫描维度
+    - "nil/typed-nil/零值契约"
+    - "并发安全"
+    - "错误处理"
+    - "context 传播"
+    - "资源清理"
+    - "API 契约"
+  max_findings_per_source: 8
+
+diff:
+  default_ref: "--cached"
+  scope_strategy: auto                 # auto | deepest-common | files
+  max_diff_lines: 500
+  skip_paths:
+    - "*.md"
+    - "docs/**"
+    - "**/testdata/**"
+  auto_stash_unstaged: false
+
+verify:
+  cmd: "make test"                     # XKit 用 "task pre-push"；改成你项目的验证命令
+  timeout_seconds: 600
+
+commit:
+  prefix_template: "fix({{TARGET}})"
+  push_after_fix: false
+
+log:
+  file: docs/adversarial-review-log.md
+  run_dir: .adversarial-runs
+
+policy:
+  fail_on_severity: high               # high | medium | never
+  strict_on_error: false
+
+daily_check:
+  enabled: false
+  expected_entries: 15

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# XKit 对抗审查 pre-commit hook（示例）
+# 装法：cp examples/xkit-pre-commit.sh.example .git/hooks/pre-commit && chmod +x
+# 或用：scripts/install-hooks.sh
+set -euo pipefail
+
+THOTH="${THOTH_HOME:-/root/code/ai/github.com/omeyang/Thoth}"
+REVIEW_SCRIPT="$THOTH/workflows/adversarial-review/scripts/review-diff.sh"
+
+[[ -x "$REVIEW_SCRIPT" ]] || { echo "✗ review-diff.sh not found" >&2; exit 0; }
+
+if [[ -f "$(git rev-parse --git-dir)/MERGE_HEAD" \
+   || -d "$(git rev-parse --git-dir)/rebase-merge" \
+   || -d "$(git rev-parse --git-dir)/rebase-apply" \
+   || -f "$(git rev-parse --git-dir)/CHERRY_PICK_HEAD" ]]; then
+  exit 0
+fi
+
+[[ "${AIREVIEW_RUNNING:-}" == "1" ]] && exit 0
+
+# review-diff.sh exit 3 = skip (empty diff / all paths skipped / diff too large) → allow commit
+"$REVIEW_SCRIPT" || RC=$?
+RC="${RC:-0}"
+[[ "$RC" -eq 3 ]] && exit 0
+exit "$RC"

@@ -1,0 +1,5 @@
+team: JUDGE_A
+verdicts:
+  - cross_id: cf-001
+    verdict: uphold
+    reason: "对照 §4.3，闭环断点成立"

@@ -1,0 +1,4 @@
+# 最简 .design-review.yaml — 仅含必填项，其余靠默认
+refs:
+  manifest:
+    - {path: /tmp/fake-legacy, tier: "基线-功能权威"}

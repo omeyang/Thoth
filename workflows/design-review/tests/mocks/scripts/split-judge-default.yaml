@@ -1,0 +1,10 @@
+team: judge-mock
+# 双裁判（JUDGE_A 正序 / JUDGE_B 逆序）对 split 两条 cross-finding 均 uphold，
+# 交回 4-vote 计票：cf-002(Y) 全 agree → 必修；cf-001(X) 2 refute → 存疑。
+verdicts:
+  - cross_id: cf-001
+    verdict: uphold
+    reason: "judge mock: 发现 X 证据可查，方向成立，交回票数裁"
+  - cross_id: cf-002
+    verdict: uphold
+    reason: "judge mock: 发现 Y asset_id 冲突成立，交回票数裁"

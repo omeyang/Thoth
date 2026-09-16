@@ -1,0 +1,14 @@
+round: 2
+findings:
+  - cross_id: cf-001
+    classification: 必修
+    votes: {T1: agree, T2: agree, T3: agree, T4: agree}
+  - cross_id: cf-002
+    classification: 存疑
+    votes: {T1: agree, T2: refute, T3: agree, T4: refute}
+  - cross_id: cf-003
+    classification: 舍弃
+    votes: {T1: refute, T2: refute, T3: refute, T4: refute}
+  - cross_id: cf-004
+    classification: 必修
+    votes: {T1: agree, T2: agree, T3: agree, T4: covered}

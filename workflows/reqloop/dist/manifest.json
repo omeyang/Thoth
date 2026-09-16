@@ -1,0 +1,74 @@
+{
+  "name": "reqloop",
+  "version": "0.3.0",
+  "description": "需求自验收闭环工作流 — EARS 反讲 + 判定三元组 + 决策链 + 负向影响分析",
+  "kind": "workflow",
+  "entry": {
+    "skill": "SKILL.md",
+    "command": "command.md"
+  },
+  "assets": [
+    "WORKFLOW.md",
+    "LITE.md",
+    "stages/",
+    "templates/",
+    "adapters/"
+  ],
+  "features": {
+    "ears_schema": true,
+    "verdict_triad": true,
+    "decision_trace": true,
+    "impact_radius": true,
+    "security_exception": true,
+    "oslc_export": true,
+    "lite_mode": true,
+    "resolve_upgrade": true,
+    "revalidate_incremental": true,
+    "batch_mode": true,
+    "stats_metrics": true,
+    "schema_validation": true,
+    "zero_config_lite": true,
+    "adapter_slots": true
+  },
+  "supported_targets": [
+    "claude-code",
+    "codex",
+    "costrict",
+    "costrict-cli"
+  ],
+  "changelog": {
+    "0.3.0": [
+      "外部系统接入抽成 5 个适配器槽位（requirements / code / ci / e2e / defects），内置 lite 适配器；企业适配器从 $THOTH_PROFILES/reqloop/adapters/<name>/ 加载",
+      "backspec source.type 枚举改为 tracker / PRD / inferred-from-code"
+    ],
+    "0.2.1": [
+      "新增 backspec-schema.json + decisions-schema.json 硬校验（P0）",
+      "修复阶段 7 结论矩阵遗漏 impact-radius / low-confidence 判定规则（P0）",
+      "消除约束多处重复，统一引用 WORKFLOW.md（P0）",
+      "decisions.jsonl 新增 idempotency_key 断点续跑去重（P1）",
+      "新增 /reqloop resolve 有条件通过→通过升级闭环（P1）",
+      "各阶段产物增加 stage_status 字段，断点续跑更鲁棒（P1）",
+      "安全关键词外置为 security-keywords.yaml 可配置 + 兜底规则（P2）",
+      "Lite 模式 zero-config 智能推断（P2）",
+      "新增 /reqloop revalidate 增量重验（P2）",
+      "阶段 4.5 重编号为 4b（P3）",
+      "Lite 模式支持 monorepo / Go workspace 跨模块分析（P3）",
+      "模板章节改用语义化标题（P3）",
+      "新增 /reqloop batch 多需求并行验收（P3）",
+      "新增 /reqloop stats 度量与反馈闭环（P3）"
+    ],
+    "0.2.0": [
+      "EARS 语法 + YAML 结构化 backspec schema",
+      "review 强制 verdict+confidence+evidence 三元组",
+      "新增 decisions.jsonl 决策链 (append-only + inputs_hash)",
+      "新增阶段 4b impact-radius 负向影响分析",
+      "安全冲突例外裁决规则",
+      "新增阶段 8 export（OSLC/ReqIF/CSV/Xray）",
+      "新增轻量模式 --lite（无企业 ALM 依赖）",
+      "子命令对齐 Spec Kit 心智"
+    ],
+    "0.1.0": [
+      "初始 7 阶段流水线"
+    ]
+  }
+}

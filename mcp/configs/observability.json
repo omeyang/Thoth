@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "opentelemetry": {
+      "command": "uvx",
+      "args": ["opentelemetry-mcp"],
+      "env": {
+        "BACKEND_TYPE": "${OTEL_BACKEND_TYPE}",
+        "BACKEND_URL": "${OTEL_BACKEND_URL}"
+      },
+      "type": "stdio"
+    }
+  }
+}

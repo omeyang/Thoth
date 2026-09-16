@@ -1,0 +1,8 @@
+# Disable warnings irrelevant for this workflow
+disable=SC1091  # source: dynamic path
+disable=SC2155  # SC2155 warns that combined `local x=$(cmd)` masks the exit code of cmd.
+                # In this workflow all helper functions treat exit codes via explicit `|| return`
+                # guards at the call site, not inside the assignment itself.  When exit-code
+                # capture IS needed we use the split form `local x; x=$(cmd)` instead.
+                # Disabling globally avoids noise in the many `local x=$(...)` one-liners that
+                # are purely value-capture with no need for per-assignment exit-code checks.

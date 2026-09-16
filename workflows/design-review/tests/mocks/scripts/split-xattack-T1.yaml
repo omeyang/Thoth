@@ -1,0 +1,8 @@
+team: T1
+round: 1
+votes:
+  - cross_id: cf-001
+    vote: refute
+    reason: "evidence 不足，违 self-check"
+  - cross_id: cf-002
+    vote: agree

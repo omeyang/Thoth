@@ -1,0 +1,16 @@
+finding:
+  id: f-003
+  severity: P2
+  source_agent: T3
+  source_role: R3
+  confidence: High
+  q1_real_scenario: "可能存在某些场景"
+  q2_avoidable_by_process: "TBD"
+  q3_old_arch_handling: "大概在 cache.go 里"
+  q4_not_hallucinated: "yes"
+  control_in_our_hands: "yes"
+  concrete_scenario: "x"
+  numbers_tagged: []
+  evidence:
+    - "ref-1"
+  proposed_action: "do x"

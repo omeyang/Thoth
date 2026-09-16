@@ -1,0 +1,17 @@
+# design-review 参考仓库清单（示例，占位路径）
+# 真实清单写在项目的 .design-review.yaml refs.manifest 段；工具每次 run 会据此生成
+# <temp_dir>/<run-id>/refs-manifest.yaml 并注入 prompt。tier 含义见 templates/principles.md §5。
+
+refs:
+  manifest:
+    - {path: /path/to/legacy-service,          tier: "基线-功能权威"}
+    - {path: /path/to/legacy-gateway,          tier: "基线-功能权威"}
+    - {path: /path/to/legacy-base-lib,         tier: "基线-契约权威-只读"}
+    - {path: /path/to/shared-toolkit,          tier: "基线-契约权威-可改需人审"}
+    - {path: /path/to/contract-registry,       tier: "契约权威-可改需人审"}
+    - {path: /path/to/Maat,                    tier: "基础要求"}
+    - {path: /path/to/data-export,             tier: "数据形态权威"}
+    # 项目侧
+    - {path: /path/to/project/design,          tier: "待审稿"}
+    - {path: /path/to/project/docs,            tier: "下级旁证-不作依据"}
+    - {path: /path/to/project,                 tier: "仅作问题证据-不作正确性"}

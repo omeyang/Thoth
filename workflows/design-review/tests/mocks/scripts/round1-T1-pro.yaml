@@ -1,0 +1,7 @@
+team: T1
+stance: pro
+round: 1
+findings:
+  - id: T1-f1
+    canonical_text: "M3 阶段 A test finding"
+    severity: P1

@@ -1,0 +1,100 @@
+# Project: {{PROJECT_NAME}}
+
+{{PROJECT_DESCRIPTION}}
+
+## 技术栈
+
+- Go {{GO_VERSION}}+
+- 存储: {{DATABASES}}
+- 消息: {{MESSAGE_QUEUE}}
+- 部署: Kubernetes + Helm + Docker
+- 可观测: OpenTelemetry (Trace/Metrics/Logs)
+- CI/CD: {{CI_CD}}
+
+## 常用命令
+
+```bash
+# 构建与测试
+go build ./...
+go test -race -count=1 ./...
+go test -race -count=1 ./internal/<package>/...    # 单包测试（替换 <package> 为实际包名）
+golangci-lint run ./...
+
+# 本地运行
+docker compose up -d                     # 启动依赖
+go run ./cmd/{{SERVICE}}/main.go         # 启动服务
+
+# Kubernetes
+kubectl apply -f deploy/k8s/
+helm upgrade --install {{SERVICE}} ./deploy/charts/{{SERVICE}}
+kubectl logs -f deployment/{{SERVICE}} -n {{NAMESPACE}}
+```
+
+## 项目结构
+
+```
+cmd/{{SERVICE}}/         # 应用入口
+internal/
+  domain/                # 业务逻辑、实体、值对象
+  usecase/               # 应用服务、编排
+  repository/            # 数据访问 (MongoDB/ClickHouse/Redis)
+  delivery/
+    grpc/                # gRPC 处理器 + 拦截器
+    http/                # HTTP 处理器 + 中间件
+  infrastructure/
+    mq/                  # 消息队列生产者/消费者
+    otel/                # OpenTelemetry 初始化
+    config/              # 配置加载
+pkg/                     # 共享库（对外导出）
+api/                     # Proto 文件、OpenAPI 规范
+deploy/
+  k8s/                   # Kubernetes 清单
+  charts/                # Helm Charts
+  docker/                # Dockerfile
+```
+
+## 代码规范
+
+- 执行 `gofmt` 和 `goimports`
+- 使用项目 `.golangci.yml` 配置 lint
+- 接受接口，返回具体类型
+- Context 作为第一个参数，绝不放入 struct
+- 错误包装: `fmt.Errorf("operation: %w", err)`，用 `errors.Is`/`errors.As` 判断
+- 表驱动测试 + `t.Parallel()`
+- 结构化日志 (`slog`) + request_id/trace_id 关联
+- 超过 2 个参数的函数使用 Options struct
+
+## 并发
+
+- 发送方关闭 channel，接收方不关
+- goroutine 生命周期绑定 `context.Context`
+- 使用 `errgroup` 管理 fan-out/fan-in
+- 共享状态用 `sync.Mutex` 或 `atomic` 保护
+
+## 测试
+
+- `go test -race` 在 CI 中必须通过
+- 表驱动测试 + subtests
+- 用接口 mock 外部依赖
+- 集成测试使用 build tags 隔离
+
+## 可观测性
+
+- 所有 span 必须传播 trace context
+- `slog` 日志携带 `trace_id` 和 `span_id`
+- Prometheus 指标暴露在 `:9090/metrics`
+- 健康检查: `:8080/healthz` (存活) `:8080/readyz` (就绪)
+
+## 数据库模式
+
+- MongoDB: 官方 driver，连接池，多文档操作用事务
+- ClickHouse: 只读分析查询，批量插入，必须有 LIMIT
+- Redis: Cache-Aside 模式，所有 key 有 TTL，故障时降级
+
+## 注意事项
+
+- 生产 Dockerfile 使用 `go build -trimpath -ldflags="-s -w"`，不用 `go run`
+- K8s 清单必须设置 resource limits
+- Kafka 消费者必须正确处理 rebalance
+- Redis key 必须有 TTL，防止内存泄漏
+- ClickHouse 查询必须有 LIMIT 子句

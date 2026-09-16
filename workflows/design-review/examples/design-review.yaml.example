@@ -1,0 +1,111 @@
+# design-review 项目配置范本
+# 复制到项目根：cp examples/design-review.yaml.example .design-review.yaml
+# 字段说明 + 完整默认值见 WORKFLOW.md §8
+
+# 项目 profile（插件，可选）：名字或路径。装项目私有的东西——角色模板覆盖、项目原则追加、cron 旋钮。
+# 名字查找顺序：$THOTH_PROFILES/design-review/<name> → ~/.config/thoth/profiles/design-review/<name>
+#              → <Thoth>/workflows/design-review/profiles/<name>（内置，仅 example）
+# 路径形式支持 $THOTH_PROFILES/... / $THOTH_HOME/... / ~/... 前缀。CLI --profile 与环境变量 DR_PROFILE 可覆盖。
+# 不写 = 不用 profile，全走内置通用模板与原则（详见 WORKFLOW.md §3.8）。
+profile: ""
+
+target:
+  default: "design/*.md"
+  exclude:
+    - "design/90-*.md"
+    - "design/91-*.md"
+
+llm:
+  claude_model: ""                     # 留空 = 继承 ~/.claude/settings.json 的当前模型
+  codex_command: codex
+  claude_bin: claude
+  codex_bin: codex
+  call_timeout_seconds: 1200
+  call_retry: 1
+
+teams:
+  T1: {tool: claude}
+  T2: {tool: codex}
+  T3: {tool: claude}
+  T4: {tool: codex}
+
+orchestrator:
+  tool: claude
+  template: templates/orchestrator.md
+
+consolidator:
+  tool: claude
+  template: templates/consolidator.md
+
+rounds:
+  min: 2
+  max: 5
+  stuck_threshold_rounds: 3
+  dispute_threshold_rounds: 3
+
+# roles.Rn.template：显式指定角色模板路径。相对路径先按 profile 目录、再按 design-review 目录解析。
+# 不写时：profile 目录下同名文件（如 agent-legacy-archeologist.md）覆盖 templates/ 默认，否则用默认。
+roles:
+  R1: {name: legacy-archeologist, template: templates/agent-legacy-archeologist.md, enabled: true}
+  R2: {name: business-pessimist, template: templates/agent-business-pessimist.md, enabled: true}
+  R3: {name: closure-judge,      template: templates/agent-closure-judge.md,      enabled: true}
+  R4: {name: impl-risk,          template: templates/agent-impl-risk.md,          enabled: true}
+  R5: {name: control-audit,      template: templates/agent-control-audit.md,      enabled: true}
+
+stance:
+  values: [pro, con, neutral]
+  enforce_at_least_one_con: true
+
+# 闭环裁判（R3 closure-judge）去偏：异质双裁判 + 位置交换。
+# 同一批待裁 cross-finding 交给两个独立裁判：A 走 tool_a（正序看条目）、B 走 tool_b（逆序看），
+# 抵消模型系统性偏差 + position bias。仅两裁判「裁决方向一致」才采信：
+#   都 uphold→按 4-vote 计票分类；都 reject→舍弃；分歧/都 needs-info→NEEDS-INFO（待人工，不硬判）。
+# dual=false 退回单裁判纯票数路径（向后兼容）。tool_a==tool_b 时为退化方案，靠 model/seed 区分。
+judge:
+  dual: true
+  tool_a: claude
+  tool_b: codex
+
+principles:
+  file: ""
+  override: []
+
+# 参考仓库清单（按权威分层，tier 含义见 templates/principles.md §5）。
+# 工具每次 run 会把本段生成为 <temp_dir>/<run-id>/refs-manifest.yaml 注入 prompt。
+refs:
+  manifest:
+    - {path: /path/to/legacy-service,          tier: "基线-功能权威"}
+    - {path: /path/to/legacy-gateway,          tier: "基线-功能权威"}
+    - {path: /path/to/legacy-base-lib,         tier: "基线-契约权威-只读"}
+    - {path: /path/to/shared-toolkit,          tier: "基线-契约权威-可改需人审"}
+    - {path: /path/to/contract-registry,       tier: "契约权威-可改需人审"}
+    - {path: /path/to/Maat,                    tier: "基础要求"}
+    - {path: /path/to/data-export,             tier: "数据形态权威"}
+    - {path: /path/to/project/docs,            tier: "下级旁证-不作依据"}
+    - {path: /path/to/project,                 tier: "仅作问题证据-不作正确性"}
+
+budget:
+  tokens_per_subagent: 30000
+  tokens_per_team_round: 200000
+  tokens_per_round_total: 800000
+  tokens_per_run_total: 4000000
+  degrade_role_order: [R5, R4, R3]
+
+verify:
+  enabled: true
+  cmd: "scripts/lint-doc.sh"
+  timeout_seconds: 120
+
+output:
+  supplement_dir: "design"
+  supplement_pattern: "201-{topic}-supplement.md"
+  patch_and_report_dir: "design/.design-runs"
+  temp_dir: "/tmp/design-review-runs"
+
+logging:
+  file: "docs/design-review-log.md"
+  daily_check_enabled: false
+
+policy:
+  fail_on_severity: P1
+  strict_on_error: false

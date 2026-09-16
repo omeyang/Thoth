@@ -1,0 +1,8 @@
+team: T2
+round: 1
+votes:
+  - cross_id: cf-001
+    vote: refute
+    reason: "本队无法复现该场景"
+  - cross_id: cf-002
+    vote: agree

@@ -1,0 +1,5 @@
+team: JUDGE_A
+verdicts:
+  - cross_id: cf-001
+    verdict: reject
+    reason: "设计洁癖，与原文不矛盾"

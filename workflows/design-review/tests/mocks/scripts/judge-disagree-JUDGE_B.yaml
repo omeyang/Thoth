@@ -1,0 +1,5 @@
+team: JUDGE_B
+verdicts:
+  - cross_id: cf-001
+    verdict: reject
+    reason: "对照 §6.2，该点已被 lifecyclefsm 承接，finding 不成立"

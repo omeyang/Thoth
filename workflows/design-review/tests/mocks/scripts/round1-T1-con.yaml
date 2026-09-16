@@ -1,0 +1,7 @@
+team: T1
+stance: con
+round: 1
+findings:
+  - id: T1-f1
+    canonical_text: "T1 con stance finding"
+    severity: P2

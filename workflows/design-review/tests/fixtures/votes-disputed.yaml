@@ -1,0 +1,5 @@
+cross_findings:
+  - cross_id: cf-001
+    canonical_text: "subscription_name 应进 allocation schema"
+    severity: P1
+    votes: {T1: agree, T2: refute, T3: agree, T4: refute}

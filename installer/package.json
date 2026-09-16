@@ -1,0 +1,25 @@
+{
+  "name": "thoth-reqloop",
+  "version": "0.1.0",
+  "description": "Installer for reqloop workflow — targets claude-code, codex, costrict, costrict-cli",
+  "type": "module",
+  "bin": {
+    "reqloop-install": "bin/install.mjs"
+  },
+  "files": [
+    "bin/",
+    "payload/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "prepack": "node bin/build-payload.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/omeyang/Thoth.git",
+    "directory": "installer"
+  }
+}

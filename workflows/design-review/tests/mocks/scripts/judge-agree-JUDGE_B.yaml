@@ -1,0 +1,5 @@
+team: JUDGE_B
+verdicts:
+  - cross_id: cf-001
+    verdict: uphold
+    reason: "对照 §4.3，sub name 派生权未承接"

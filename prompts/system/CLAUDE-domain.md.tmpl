@@ -1,0 +1,55 @@
+# {{DOMAIN_NAME}} 领域
+
+## 领域概述
+
+{{DOMAIN_DESCRIPTION}}
+
+## 核心实体
+
+| 实体 | 说明 | 主要字段 |
+|------|------|---------|
+| {{ENTITY_1}} | {{DESC_1}} | {{FIELDS_1}} |
+| {{ENTITY_2}} | {{DESC_2}} | {{FIELDS_2}} |
+
+## 业务规则
+
+1. {{RULE_1}}
+2. {{RULE_2}}
+3. {{RULE_3}}
+
+## 聚合根
+
+- `{{AGGREGATE_ROOT}}` 是本领域的聚合根
+- 所有状态变更必须通过聚合根方法
+- 跨聚合操作通过领域事件解耦
+
+## 值对象
+
+- {{VALUE_OBJECT_1}}: 不可变，通过值比较相等性
+- {{VALUE_OBJECT_2}}: 包含验证逻辑
+
+## 领域服务
+
+当操作不自然地属于任何实体时，使用领域服务:
+
+```go
+type {{DOMAIN}}Service interface {
+    {{METHOD_1}}(ctx context.Context, ...) error
+    {{METHOD_2}}(ctx context.Context, ...) ({{RESULT}}, error)
+}
+```
+
+## 仓储接口
+
+```go
+type {{ENTITY}}Repository interface {
+    FindByID(ctx context.Context, id string) (*{{ENTITY}}, error)
+    Save(ctx context.Context, entity *{{ENTITY}}) error
+    Delete(ctx context.Context, id string) error
+}
+```
+
+## 注意事项
+
+- {{GOTCHA_1}}
+- {{GOTCHA_2}}

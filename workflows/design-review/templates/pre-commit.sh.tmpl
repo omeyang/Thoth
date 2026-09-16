@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# design-review pre-commit hook
+# 由 Thoth/workflows/design-review/scripts/install-hooks.sh 安装到 .git/hooks/pre-commit
+#
+# 行为：对本次 commit 暂存（staged）的 redesign/*.md 跑 lint-doc.sh
+#   - 断链（L2 ERROR）→ 阻断 commit
+#   - 含糊词（L5 WARN）→ 仅打印，不阻断
+#
+# 关闭单次：git commit --no-verify
+
+set -euo pipefail
+
+# 1. 定位 lint-doc.sh — 优先用 THOTH_HOME；否则用 install-hooks 写入的备用绝对路径
+LINT_DOC=""
+if [ -n "${THOTH_HOME:-}" ] && [ -x "$THOTH_HOME/workflows/design-review/scripts/lint-doc.sh" ]; then
+    LINT_DOC="$THOTH_HOME/workflows/design-review/scripts/lint-doc.sh"
+elif [ -x "@DR_LINT_DOC_FALLBACK@" ]; then
+    LINT_DOC="@DR_LINT_DOC_FALLBACK@"
+else
+    echo "design-review pre-commit: 找不到 lint-doc.sh（THOTH_HOME 未设置且 fallback 失效）" >&2
+    echo "  设置 THOTH_HOME 后重试，或重新跑 install-hooks.sh" >&2
+    exit 1
+fi
+
+# 2. 拣 staged 的 redesign/*.md（A=added、M=modified、R=renamed 后路径）
+mapfile -t TARGETS < <(
+    git diff --cached --name-only --diff-filter=ACMR -- 'redesign/*.md' 2>/dev/null || true
+)
+
+if [ "${#TARGETS[@]}" -eq 0 ]; then
+    exit 0
+fi
+
+# 3. 跑 lint-doc — 累计错误数；warn 不阻断
+RC=0
+for f in "${TARGETS[@]}"; do
+    [ -f "$f" ] || continue
+    if ! "$LINT_DOC" "$f"; then
+        RC=1
+    fi
+done
+
+if [ "$RC" -ne 0 ]; then
+    echo "" >&2
+    echo "design-review pre-commit 阻断：上方文档自洽错误必须修复（用 git commit --no-verify 临时跳过）" >&2
+    exit 1
+fi
+
+exit 0

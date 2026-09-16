@@ -1,0 +1,5 @@
+cross_findings:
+  - cross_id: cf-001
+    canonical_text: "should add quantum encryption to wire"
+    severity: P3
+    votes: {T1: refute, T2: discard, T3: refute, T4: discard}

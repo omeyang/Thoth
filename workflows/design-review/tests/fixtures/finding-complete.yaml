@@ -1,0 +1,18 @@
+finding:
+  id: f-001
+  severity: P0
+  source_agent: T1
+  source_role: R1
+  confidence: High
+  q1_real_scenario: "多租户 SaaS 在 status 短暂变更场景"
+  q2_avoidable_by_process: "否，是 tenant-management 行为"
+  q3_old_arch_handling: "legacy-gateway/internal/tenant/cache.go:121-156 不立即删 backend"
+  q4_not_hallucinated: "已 grep 基线老码确认"
+  control_in_our_hands: "是"
+  concrete_scenario: "tenant status 临时离开 BindSuccess 30 min 内回来"
+  numbers_tagged:
+    - {value: "30 min", tag: "参考起点"}
+  evidence:
+    - "legacy-gateway/internal/tenant/cache.go:121-156"
+    - "design/00-overview.md §9.2"
+  proposed_action: "status 中间态独立分类，不走 30 min 真删"

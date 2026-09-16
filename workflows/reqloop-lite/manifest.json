@@ -1,0 +1,55 @@
+{
+  "name": "reqloop-lite",
+  "version": "0.2.1",
+  "description": "轻量反向需求验收 — 无企业 ALM 依赖，仅需 git + test runner。核心能力（EARS 反讲、决策链、影响分析、安全例外）与完整版一致。",
+  "kind": "workflow",
+  "entry": {
+    "skill": "SKILL.md",
+    "command": "command.md"
+  },
+  "depends_on": {
+    "sibling": "../reqloop"
+  },
+  "assets": [
+    "../reqloop/WORKFLOW.md",
+    "../reqloop/LITE.md",
+    "../reqloop/stages/",
+    "../reqloop/templates/",
+    "../reqloop/adapters/lite/"
+  ],
+  "features": {
+    "ears_schema": true,
+    "verdict_triad": true,
+    "decision_trace": true,
+    "impact_radius": true,
+    "security_exception": true,
+    "oslc_export": true,
+    "enterprise_alm": false,
+    "ci_platform": false
+  },
+  "required_tools": [
+    "git"
+  ],
+  "recommended_tools": [
+    "gh",
+    "ripgrep",
+    "go",
+    "tree-sitter"
+  ],
+  "supported_targets": [
+    "claude-code",
+    "codex",
+    "costrict",
+    "costrict-cli"
+  ],
+  "distribution": {
+    "open_source_ready": true,
+    "marketplace_tags": [
+      "requirements",
+      "verification",
+      "spec-driven",
+      "reverse-sdd",
+      "code-review"
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+team: JUDGE_A
+verdicts:
+  - cross_id: cf-001
+    verdict: uphold
+    reason: "对照 §4.3 单写者矩阵，原文无唯一写者"

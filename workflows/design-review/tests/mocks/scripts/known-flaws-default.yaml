@@ -1,0 +1,5 @@
+team: T1
+findings:
+  - id: f1
+    canonical_text: "scheduler 漏写单写者矩阵"
+    severity: P0

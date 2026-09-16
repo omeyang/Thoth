@@ -1,0 +1,7 @@
+team: TX
+round: 1
+votes:
+  - cross_id: cf-001
+    vote: agree
+  - cross_id: cf-002
+    vote: agree

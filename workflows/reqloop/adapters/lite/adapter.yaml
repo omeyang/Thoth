@@ -1,0 +1,7 @@
+name: lite
+description: 仅依赖 git 与本地测试命令的轻量适配器；开源项目、单仓库团队、无 ALM/CI 平台时的默认选择
+id_patterns: []
+source_types: [tracker, PRD, inferred-from-code]
+tools: [git]
+optional_tools: [gh, go, tree-sitter, rg]
+defect_id_prefix: "issue-"

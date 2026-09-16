@@ -1,0 +1,48 @@
+# reqloop 安全例外关键词配置
+# 当需求/PRD 冲突条目命中这些关键词时，不走"代码为准"，改为以 PRD 为准并阻塞验收。
+# 团队可按需扩展此列表，新增关键词立即生效（无需修改 stages/*.md）。
+#
+# 规则：
+# - 匹配方式：大小写不敏感，子串匹配（如 "auth" 命中 "authentication"）
+# - 命中任一关键词 → security_sensitive: true + security-auditor 介入
+# - 兜底规则：即使未命中关键词，AI 判定 dimension=security 且 confidence=high 时也触发安全例外
+
+# 鉴权与授权
+authentication:
+  keywords: [鉴权, auth, authz, authn, 权限, permission, RBAC, ACL, OAuth, OIDC, SSO, SAML]
+
+# 审计与合规
+audit:
+  keywords: [审计, audit, 日志合规, compliance, SOX, GDPR, HIPAA]
+
+# 限流与熔断
+rate_limiting:
+  keywords: [限流, rate limit, rate-limit, throttle, 熔断, circuit breaker]
+
+# 隐私与敏感信息
+privacy:
+  keywords: [PII, 敏感信息, 脱敏, mask, 个人信息, 隐私, privacy, anonymize, redact]
+
+# 加密与传输安全
+cryptography:
+  keywords: [加密, encrypt, decrypt, TLS, SSL, 签名, signature, certificate, HMAC, AES, RSA, 密钥, secret]
+
+# 幂等性
+idempotency:
+  keywords: [幂等, idempoten]
+
+# 注入与 Web 安全
+injection:
+  keywords: [SQL 注入, SQL injection, XSS, CSRF, SSRF, 越权, 命令注入, command injection, path traversal, 目录遍历, 开放重定向, open redirect]
+
+# 竞态条件（v0.2.1 新增）
+race_condition:
+  keywords: [竞态, race condition, TOCTOU, double spend, 并发安全]
+
+# 密码学降级（v0.2.1 新增）
+crypto_weakness:
+  keywords: [MD5, SHA1, SHA-1, weak hash, 弱哈希, 弱加密, DES, RC4, 不安全算法]
+
+# 凭据与密钥管理（v0.2.1 新增）
+credential:
+  keywords: [hardcoded, 硬编码密码, 密钥泄露, credential, API key, token leak, secret leak]

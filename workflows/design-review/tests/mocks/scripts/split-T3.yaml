@@ -1,0 +1,10 @@
+team: T3
+stance: neutral
+round: 1
+findings:
+  - id: T3-f1
+    severity: P1
+    source_agent: T3
+    canonical_text: "split 发现 X：本地化模式缺静态租户事实来源"
+    evidence:
+      - "legacy-service/internal/config/config.go:134-184"

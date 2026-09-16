@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Mock Codex CLI for tests. AIREVIEW_CODEX_FIXTURE selects scenario per-call.
+case "${AIREVIEW_CODEX_FIXTURE:-}" in
+  empty)      echo "无发现"; exit 0 ;;
+  one-high)   cat <<'EOF'
+| 编号 | 严重度 | 文件:行 | 根因 | 修复 | 非FP理由 |
+|------|--------|---------|------|------|----------|
+| 1    | FG-H   | foo.go:42 | nil deref | check return | 已 grep 调用方无前置 nil 检查 |
+EOF
+              exit 0 ;;
+  timeout)    sleep 1300 ;;
+  fail-1)     echo "codex error" >&2; exit 1 ;;
+  *)          echo "MOCK codex: missing AIREVIEW_CODEX_FIXTURE" >&2; exit 99 ;;
+esac

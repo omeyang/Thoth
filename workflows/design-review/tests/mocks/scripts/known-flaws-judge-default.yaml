@@ -1,0 +1,7 @@
+team: judge-mock
+# 双裁判（JUDGE_A 正序 / JUDGE_B 逆序）对 known-flaws 唯一 cross-finding 均 uphold，
+# 交回 4-vote 计票决定 必修/存疑/舍弃（此处 cf-001 票齐 → 必修）。
+verdicts:
+  - cross_id: cf-001
+    verdict: uphold
+    reason: "judge mock: scheduler 单写者矩阵确为已知缺陷，维持原裁"

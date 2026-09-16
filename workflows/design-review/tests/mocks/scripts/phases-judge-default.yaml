@@ -1,0 +1,8 @@
+team: judge-mock
+verdicts:
+  - cross_id: cf-001
+    verdict: uphold
+    reason: "phases mock: 对照准则成立"
+  - cross_id: cf-002
+    verdict: uphold
+    reason: "phases mock: 对照准则成立"

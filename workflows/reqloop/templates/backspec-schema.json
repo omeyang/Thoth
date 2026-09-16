@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reqloop/backspec-requirements",
+  "title": "reqloop backspec requirements YAML schema",
+  "description": "阶段 3 门禁校验：反讲文档 §1 结构化需求条目必须通过此 schema。校验失败则禁止进入阶段 4a。",
+  "type": "object",
+  "required": ["requirements"],
+  "properties": {
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/requirement"
+      }
+    }
+  },
+  "$defs": {
+    "requirement": {
+      "type": "object",
+      "required": ["id", "ears", "source", "status", "confidence"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^REQ-\\d{3,}$",
+          "description": "需求条目唯一标识，格式 REQ-NNN"
+        },
+        "ears": {
+          "type": "string",
+          "minLength": 10,
+          "description": "EARS 语法描述（WHEN/WHILE/WHERE/IF/THE ... SHALL ...）"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "code_anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/code_anchor"
+          },
+          "description": "status=covered 时必须 >=1 个"
+        },
+        "test_anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/test_anchor"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": ["covered", "partial", "missing", "conflict", "extra"],
+          "description": "需求覆盖状态，仅允许这 5 种枚举值"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"],
+          "description": "AI 判定置信度"
+        },
+        "confidence_reason": {
+          "type": "string",
+          "minLength": 5,
+          "description": "confidence=low 时必填"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "covered" } }
+          },
+          "then": {
+            "required": ["code_anchors"],
+            "properties": {
+              "code_anchors": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "confidence": { "const": "low" } }
+          },
+          "then": {
+            "required": ["confidence_reason"]
+          }
+        }
+      ]
+    },
+    "source": {
+      "type": "object",
+      "required": ["type", "ref", "hash"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["tracker", "PRD", "inferred-from-code"],
+          "description": "需求来源类型：tracker = 需求单系统（具体系统由适配器决定），PRD = 产品文档，inferred-from-code = 仅从代码反推"
+        },
+        "ref": {
+          "type": ["string", "null"],
+          "description": "需求单验收条目编号，inferred-from-code 时可为 null"
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{8,64}$",
+          "description": "原始文本哈希，防需求漂移"
+        }
+      }
+    },
+    "code_anchor": {
+      "type": "object",
+      "required": ["repo", "file", "lines", "commit"],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lines": {
+          "type": "string",
+          "pattern": "^\\d+(-\\d+)?$",
+          "description": "行号或行号范围，如 42 或 42-68"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{7,40}$"
+        }
+      }
+    },
+    "test_anchor": {
+      "type": "object",
+      "required": ["repo", "file", "case"],
+      "properties": {
+        "repo": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "case": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

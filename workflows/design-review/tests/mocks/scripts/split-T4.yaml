@@ -1,0 +1,10 @@
+team: T4
+stance: con
+round: 1
+findings:
+  - id: T4-f1
+    severity: P1
+    source_agent: T4
+    canonical_text: "split 发现 Y：graceful 搬迁重叠窗口 asset_id 冲突"
+    evidence:
+      - "legacy-service/internal/tenant/cache.go:42-145"

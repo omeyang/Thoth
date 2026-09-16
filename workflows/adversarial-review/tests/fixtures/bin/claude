@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Mock Claude. AIREVIEW_FIXTURE selects scenario.
+# When fixture is "clean"/"one-high"/"one-medium", also writes verdict.json + log-entry.md to LOG_DIR
+LOG_DIR="${LOG_DIR:-/tmp}"
+TS="${TS:-$(date -u +%Y%m%dT%H%M%SZ)}"
+
+write_verdict() {
+  local sev="$1" must="$2"
+  local entry="$LOG_DIR/log-entry-${TS}.md"
+  local verdict="$LOG_DIR/verdict-${TS}.json"
+  cat > "$entry" <<EOF
+## $(date +%F) TARGET=${TARGET:-unknown}
+- mock fixture: ${AIREVIEW_FIXTURE}
+- highest severity: $sev
+- must_fix: $must
+EOF
+  cat > "$verdict" <<EOF
+{"findings":{"claude_attack":1,"claude_defend":0,"codex_a":1,"codex_b":0},"cross":{"codex_attacks_claude":{"a":1,"b":0,"c":0},"claude_attacks_codex":{"a":1,"b":0,"c":0}},"verdict":{"must_fix":$must,"disputed":0,"discarded":0},"highest_severity":"$sev","log_entry_path":"$entry"}
+EOF
+}
+
+case "${AIREVIEW_FIXTURE:-}" in
+  clean)      write_verdict none 0; echo "ok"; exit 0 ;;
+  one-high)   write_verdict high 1; echo "ok"; exit 0 ;;
+  one-medium) write_verdict medium 0; echo "ok"; exit 0 ;;
+  timeout)    sleep 1300 ;;
+  fail-1)     echo "claude API err" >&2; exit 1 ;;
+  empty)      echo "无发现"; exit 0 ;;
+  *)          echo "MOCK claude: missing AIREVIEW_FIXTURE" >&2; exit 99 ;;
+esac

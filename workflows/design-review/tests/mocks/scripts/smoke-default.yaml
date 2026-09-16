@@ -1,0 +1,5 @@
+# smoke 测试占位 case — M1 阶段仅验证 mock 能被调用
+team_id: smoke
+stance: any
+round: any
+findings: []

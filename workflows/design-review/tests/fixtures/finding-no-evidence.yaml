@@ -1,0 +1,15 @@
+finding:
+  id: f-004
+  severity: P1
+  source_agent: T4
+  source_role: R4
+  confidence: Medium
+  q1_real_scenario: "yes"
+  q2_avoidable_by_process: "no"
+  q3_old_arch_handling: "ref-x"
+  q4_not_hallucinated: "yes"
+  control_in_our_hands: "yes"
+  concrete_scenario: "x"
+  numbers_tagged: []
+  evidence: []
+  proposed_action: "do x"

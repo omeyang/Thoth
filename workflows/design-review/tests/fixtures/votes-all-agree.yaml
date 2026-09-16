@@ -1,0 +1,5 @@
+cross_findings:
+  - cross_id: cf-001
+    canonical_text: "lifecyclefsm 漏处理 inconsistent 二次失败"
+    severity: P0
+    votes: {T1: agree, T2: agree, T3: agree, T4: agree}

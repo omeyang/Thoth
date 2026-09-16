@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reqloop/decisions-line",
+  "title": "reqloop decisions.jsonl 单行 schema",
+  "description": "每条判定（decisions.jsonl 的一行）必须通过此 schema。未通过的行视为无效决策。",
+  "type": "object",
+  "required": [
+    "ts", "stage", "decision_id", "req_id",
+    "code_anchor", "verdict", "confidence", "reasoning",
+    "inputs_hash", "model"
+  ],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO8601 时间戳"
+    },
+    "stage": {
+      "type": "string",
+      "enum": ["backspec", "review", "impact-radius", "runtime", "e2e", "report"],
+      "description": "产出此决策的阶段"
+    },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^D-\\d{4,}$",
+      "description": "决策唯一标识，格式 D-NNNN"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "幂等键，格式 {stage}-{req_id}-{finding_id}，断点续跑时用于去重"
+    },
+    "req_id": {
+      "type": ["string", "null"],
+      "description": "关联的需求条目 ID，impact-radius 的隐式变更可为 null"
+    },
+    "finding_id": {
+      "type": ["string", "null"],
+      "description": "关联的 finding ID（阶段 4a 使用）"
+    },
+    "code_anchor": {
+      "type": "object",
+      "required": ["repo", "file", "lines", "commit"],
+      "properties": {
+        "repo": { "type": "string" },
+        "file": { "type": "string" },
+        "lines": { "type": "string", "pattern": "^\\d+(-\\d+)?$" },
+        "commit": { "type": "string", "pattern": "^[a-f0-9]{7,40}$" }
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "covered", "partial", "missing", "conflict",
+        "violates", "compliant",
+        "behavior-change", "signature-compat", "unknown"
+      ],
+      "description": "判定结论标签"
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 5,
+      "description": "判定链路说明"
+    },
+    "inputs_hash": {
+      "type": "object",
+      "required": ["req_text", "code_diff"],
+      "properties": {
+        "req_text": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{8,64}$"
+        },
+        "code_diff": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{8,64}$"
+        },
+        "prd_section": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[a-f0-9]{8,64}$"
+        }
+      },
+      "description": "输入哈希，需求/代码变化后决策自动作废"
+    },
+    "model": {
+      "type": "string",
+      "description": "产出此决策的模型 ID"
+    },
+    "human_override": {
+      "type": ["object", "null"],
+      "properties": {
+        "by": { "type": "string" },
+        "at": { "type": "string", "format": "date-time" },
+        "new_verdict": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "required": ["by", "at", "new_verdict", "reason"],
+      "description": "人工覆盖记录，null 表示未覆盖"
+    }
+  }
+}

@@ -1,0 +1,56 @@
+# XKit 项目对抗审查配置（reference impl）
+# 装法：cp examples/xkit-pkgs.yaml.example /path/to/XKit/.adversarial-review.yaml
+
+repo:
+  root: .
+  search_dirs: [pkg, cmd, internal]
+  search_maxdepth: 3
+
+llm:
+  # claude_model: 留空 = 继承 ~/.claude/settings.json 的当前模型（推荐）
+  #   只在需要把某个项目钉死在特定模型时才填，填了就得跟着模型换代维护
+  claude_model: ""
+  codex_command: codex
+  parallel_codex: true
+
+review:
+  dimensions:
+    - "nil/typed-nil/零值契约"
+    - "并发安全（mutex 边界/goroutine 泄漏/线性化缺口/atomic 顺序）"
+    - "错误处理（%w / errors.Join 双 cause / 错误链）"
+    - "context 传播与 nil 防御"
+    - "资源清理（Close 幂等/cleanup goroutine 退出）"
+    - "API 契约"
+    - "跨平台 build tag"
+  max_findings_per_source: 8
+
+diff:
+  default_ref: "--cached"
+  scope_strategy: auto
+  max_diff_lines: 500
+  skip_paths:
+    - "*.md"
+    - "docs/**"
+    - "**/testdata/**"
+    - "*.lua"
+  auto_stash_unstaged: false
+
+verify:
+  cmd: "task pre-push"
+  timeout_seconds: 600
+
+commit:
+  prefix_template: "fix({{TARGET}})"
+  push_after_fix: false
+
+log:
+  file: docs/adversarial-review-log.md
+  run_dir: .adversarial-runs
+
+policy:
+  fail_on_severity: high
+  strict_on_error: false
+
+daily_check:
+  enabled: false
+  expected_entries: 15

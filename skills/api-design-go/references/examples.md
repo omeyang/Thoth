@@ -1,5 +1,17 @@
 # Go API 设计 - 完整代码实现
 
+基线：go1.24.6，路由用标准库 `http.ServeMux`；校验用 `github.com/go-playground/validator/v10 v10.30.1`（更高版本要求更新的 Go 工具链）。
+context key 统一用未导出类型：
+
+```go
+type ctxKey int
+
+const (
+    apiVersionKey ctxKey = iota
+    contentTypeKey
+)
+```
+
 ## 目录
 
 - [版本控制](#版本控制)
@@ -26,15 +38,18 @@
 ### URL 路径版本
 
 ```go
-// 路由注册
-func RegisterRoutes(r *mux.Router) {
-    v1 := r.PathPrefix("/api/v1").Subrouter()
-    v1.HandleFunc("/users", v1ListUsers).Methods("GET")
-    v1.HandleFunc("/users/{id}", v1GetUser).Methods("GET")
+// 路由注册：每个版本一个子 mux，挂到根 mux
+func RegisterRoutes(root *http.ServeMux) {
+    v1 := http.NewServeMux()
+    v1.HandleFunc("GET /users", v1ListUsers)
+    v1.HandleFunc("GET /users/{id}", v1GetUser) // handler 内 r.PathValue("id")
 
-    v2 := r.PathPrefix("/api/v2").Subrouter()
-    v2.HandleFunc("/users", v2ListUsers).Methods("GET")
-    v2.HandleFunc("/users/{id}", v2GetUser).Methods("GET")
+    v2 := http.NewServeMux()
+    v2.HandleFunc("GET /users", v2ListUsers)
+    v2.HandleFunc("GET /users/{id}", v2GetUser)
+
+    root.Handle("/api/v1/", http.StripPrefix("/api/v1", v1))
+    root.Handle("/api/v2/", http.StripPrefix("/api/v2", v2))
 }
 
 // 版本化响应
@@ -64,13 +79,13 @@ func VersionMiddleware(next http.Handler) http.Handler {
             version = "1" // 默认版本
         }
 
-        ctx := context.WithValue(r.Context(), "api-version", version)
+        ctx := context.WithValue(r.Context(), apiVersionKey, version)
         next.ServeHTTP(w, r.WithContext(ctx))
     })
 }
 
 func GetAPIVersion(ctx context.Context) string {
-    if v, ok := ctx.Value("api-version").(string); ok {
+    if v, ok := ctx.Value(apiVersionKey).(string); ok {
         return v
     }
     return "1"
@@ -134,12 +149,12 @@ type Cursor struct {
 }
 
 func EncodeCursor(c Cursor) string {
-    data, _ := json.Marshal(c)
-    return base64.URLEncoding.EncodeToString(data)
+    data, _ := json.Marshal(c) // 固定结构体，Marshal 不会失败
+    return base64.RawURLEncoding.EncodeToString(data)
 }
 
 func DecodeCursor(s string) (Cursor, error) {
-    data, err := base64.URLEncoding.DecodeString(s)
+    data, err := base64.RawURLEncoding.DecodeString(s)
     if err != nil {
         return Cursor{}, err
     }
@@ -180,6 +195,9 @@ func (r *UserRepo) ListWithCursor(ctx context.Context, cursor string, limit int)
             return nil, err
         }
         users = append(users, u)
+    }
+    if err := rows.Err(); err != nil {
+        return nil, err
     }
 
     page := &CursorPage[User]{
@@ -253,6 +271,9 @@ func (r *UserRepo) ListWithOffset(ctx context.Context, params OffsetParams) (*Of
         }
         users = append(users, u)
     }
+    if err := rows.Err(); err != nil {
+        return nil, err
+    }
 
     totalPages := int((total + int64(params.PageSize) - 1) / int64(params.PageSize))
 
@@ -273,7 +294,7 @@ func (r *UserRepo) ListWithOffset(ctx context.Context, params OffsetParams) (*Of
 ### 标准错误响应
 
 ```go
-// RFC 7807 Problem Details
+// RFC 9457 Problem Details（取代 RFC 7807，字段兼容）
 type ProblemDetail struct {
     Type     string         `json:"type"`               // 错误类型 URI
     Title    string         `json:"title"`              // 简短描述
@@ -324,25 +345,32 @@ func (p *ProblemDetail) WithTraceID(traceID string) *ProblemDetail {
     return p
 }
 
-func (p *ProblemDetail) WriteTo(w http.ResponseWriter) {
+func (p *ProblemDetail) Write(w http.ResponseWriter) {
     w.Header().Set("Content-Type", "application/problem+json")
     w.WriteHeader(p.Status)
-    json.NewEncoder(w).Encode(p)
+    _ = json.NewEncoder(w).Encode(p) // 头已发出，编码错误无法再回报给客户端
 }
 ```
 
 ### HTTP 状态码映射
 
 ```go
-var statusCodeMap = map[error]int{
-    ErrNotFound:         http.StatusNotFound,
-    ErrValidation:       http.StatusBadRequest,
-    ErrUnauthorized:     http.StatusUnauthorized,
-    ErrForbidden:        http.StatusForbidden,
-    ErrConflict:         http.StatusConflict,
-    ErrRateLimited:      http.StatusTooManyRequests,
-    ErrServiceUnavail:   http.StatusServiceUnavailable,
+// 领域哨兵错误；ValidationError 通过 Unwrap 归入 ErrValidation
+var (
+    ErrNotFound     = errors.New("not found")
+    ErrValidation   = errors.New("validation failed")
+    ErrUnauthorized = errors.New("unauthorized")
+    ErrForbidden    = errors.New("forbidden")
+    ErrConflict     = errors.New("conflict")
+    ErrRateLimited  = errors.New("rate limited")
+)
+
+type ValidationError struct {
+    Fields []FieldError
 }
+
+func (e *ValidationError) Error() string { return ErrValidation.Error() }
+func (e *ValidationError) Unwrap() error { return ErrValidation }
 
 func ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
     traceID := GetTraceID(r.Context())
@@ -381,7 +409,7 @@ func ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 
     problem.Instance = r.URL.Path
     problem.TraceID = traceID
-    problem.WriteTo(w)
+    problem.Write(w)
 }
 ```
 
@@ -399,8 +427,8 @@ type CreateUserRequest struct {
     BirthDate string `json:"birth_date" validate:"omitempty,datetime=2006-01-02"`
 }
 
-// 使用 go-playground/validator
-var validate = validator.New()
+// 使用 github.com/go-playground/validator/v10 v10.30.1；WithRequiredStructEnabled 是 v10 推荐的新行为
+var validate = validator.New(validator.WithRequiredStructEnabled())
 
 func DecodeAndValidate[T any](r *http.Request) (T, error) {
     var req T
@@ -470,7 +498,7 @@ func JSON[T any](w http.ResponseWriter, r *http.Request, status int, data T) {
         },
     }
 
-    json.NewEncoder(w).Encode(resp)
+    _ = json.NewEncoder(w).Encode(resp)
 }
 
 // 创建成功 (201 + Location)
@@ -517,10 +545,14 @@ func WithLinks[T any](data T, links ...Link) HATEOASResponse[T] {
     }
 }
 
-// 使用示例
+// 使用示例（路由模式 "GET /users/{id}"）
 func GetUser(w http.ResponseWriter, r *http.Request) {
-    userID := chi.URLParam(r, "id")
-    user, _ := userService.Get(r.Context(), userID)
+    userID := r.PathValue("id")
+    user, err := userService.Get(r.Context(), userID)
+    if err != nil {
+        ErrorHandler(w, r, err)
+        return
+    }
 
     resp := WithLinks(user,
         Link{Href: "/users/" + userID, Rel: "self", Method: "GET"},
@@ -547,7 +579,11 @@ type PageInfo struct {
 }
 
 func ListUsers(w http.ResponseWriter, r *http.Request) {
-    users, total, _ := userService.List(r.Context(), 1, 20)
+    users, total, err := userService.List(r.Context(), 1, 20)
+    if err != nil {
+        ErrorHandler(w, r, err)
+        return
+    }
 
     resp := CollectionResponse[User]{
         Items: users,
@@ -589,23 +625,26 @@ func ContentNegotiationMiddleware(next http.Handler) http.Handler {
             contentType = "application/json"
         }
 
-        ctx := context.WithValue(r.Context(), "content-type", contentType)
+        ctx := context.WithValue(r.Context(), contentTypeKey, contentType)
         next.ServeHTTP(w, r.WithContext(ctx))
     })
 }
 
 func Respond(w http.ResponseWriter, r *http.Request, status int, data any) {
-    contentType := r.Context().Value("content-type").(string)
+    contentType, _ := r.Context().Value(contentTypeKey).(string)
+    if contentType == "" {
+        contentType = "application/json"
+    }
     w.Header().Set("Content-Type", contentType)
     w.WriteHeader(status)
 
     switch contentType {
     case "application/xml":
-        xml.NewEncoder(w).Encode(data)
+        _ = xml.NewEncoder(w).Encode(data)
     case "text/csv":
         writeCSV(w, data)
     default:
-        json.NewEncoder(w).Encode(data)
+        _ = json.NewEncoder(w).Encode(data)
     }
 }
 ```
@@ -625,16 +664,13 @@ func RateLimitHeaders(w http.ResponseWriter, limit, remaining int, resetAt time.
 }
 
 func RateLimitExceeded(w http.ResponseWriter, resetAt time.Time) {
-    retryAfter := int(time.Until(resetAt).Seconds())
-    if retryAfter < 1 {
-        retryAfter = 1
-    }
+    retryAfter := max(1, int(time.Until(resetAt).Seconds()))
 
     w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
     RateLimitHeaders(w, 100, 0, resetAt)
 
     problem := NewProblemDetail(429, ErrTypeRateLimit, "Rate limit exceeded").
         WithDetail(fmt.Sprintf("Try again in %d seconds", retryAfter))
-    problem.WriteTo(w)
+    problem.Write(w)
 }
 ```

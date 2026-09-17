@@ -1,5 +1,8 @@
 # 云架构模式 - 完整代码实现
 
+基线：go1.24.6。依赖：`github.com/sony/gobreaker/v2 v2.4.0`、`github.com/avast/retry-go/v5 v5.0.0`、
+`golang.org/x/time v0.14.0`、`github.com/confluentinc/confluent-kafka-go/v2 v2.14.1`。
+
 ## 目录
 
 - [可靠性模式](#可靠性模式)
@@ -32,7 +35,7 @@
 **意图**：防止应用程序反复执行可能失败的操作
 
 ```go
-import "github.com/sony/gobreaker/v2"
+import "github.com/sony/gobreaker/v2" // v2.4.0，泛型 CircuitBreaker[T]
 
 cb := gobreaker.NewCircuitBreaker[*http.Response](gobreaker.Settings{
     Name:        "api-breaker",
@@ -54,12 +57,10 @@ resp, err := cb.Execute(func() (*http.Response, error) {
 **意图**：通过透明重试处理临时故障
 
 ```go
-import "github.com/avast/retry-go/v5"
+import "github.com/avast/retry-go/v5" // v5.0.0：先 New(opts...) 构造 Retrier，再 Do
 
-err := retry.Do(
-    func() error {
-        return callExternalAPI()
-    },
+retrier := retry.New(
+    retry.Context(ctx),
     retry.Attempts(5),
     retry.Delay(100*time.Millisecond),
     retry.MaxDelay(5*time.Second),
@@ -68,6 +69,16 @@ err := retry.Do(
         return errors.Is(err, ErrTemporary)
     }),
 )
+
+err := retrier.Do(func() error {
+    return callExternalAPI(ctx)
+})
+
+// 需要返回值时用泛型版本
+resp, err := retry.NewWithData[*Response](retry.Context(ctx), retry.Attempts(3)).
+    Do(func() (*Response, error) {
+        return client.Call(ctx)
+    })
 ```
 
 ### 隔离（Bulkhead）
@@ -105,7 +116,7 @@ var (
 **意图**：控制资源消耗速率
 
 ```go
-import "golang.org/x/time/rate"
+import "golang.org/x/time/rate" // v0.14.0
 
 // 令牌桶限流器
 limiter := rate.NewLimiter(rate.Limit(100), 10) // 100 QPS, burst 10
@@ -195,22 +206,29 @@ type Account struct {
     Version int
 }
 
-func (a *Account) Apply(event Event) {
+func (a *Account) Apply(event Event) error {
     switch event.Type {
     case "AccountCreated":
         var data struct{ InitialBalance int }
-        json.Unmarshal(event.Data, &data)
+        if err := json.Unmarshal(event.Data, &data); err != nil {
+            return fmt.Errorf("decode %s: %w", event.Type, err)
+        }
         a.Balance = data.InitialBalance
-    case "MoneyDeposited":
+    case "MoneyDeposited", "MoneyWithdrawn":
         var data struct{ Amount int }
-        json.Unmarshal(event.Data, &data)
-        a.Balance += data.Amount
-    case "MoneyWithdrawn":
-        var data struct{ Amount int }
-        json.Unmarshal(event.Data, &data)
-        a.Balance -= data.Amount
+        if err := json.Unmarshal(event.Data, &data); err != nil {
+            return fmt.Errorf("decode %s: %w", event.Type, err)
+        }
+        if event.Type == "MoneyDeposited" {
+            a.Balance += data.Amount
+        } else {
+            a.Balance -= data.Amount
+        }
+    default:
+        return fmt.Errorf("unknown event type %q", event.Type)
     }
     a.Version = event.Version
+    return nil
 }
 
 func LoadAccount(ctx context.Context, store EventStore, id string) (*Account, error) {
@@ -221,7 +239,9 @@ func LoadAccount(ctx context.Context, store EventStore, id string) (*Account, er
 
     account := &Account{ID: id}
     for _, e := range events {
-        account.Apply(e)
+        if err := account.Apply(e); err != nil {
+            return nil, err
+        }
     }
     return account, nil
 }
@@ -253,7 +273,14 @@ type OrderQueryService struct {
 
 func (s *OrderQueryService) GetOrderSummary(ctx context.Context, id string) (*OrderSummaryDTO, error) {
     // 从专门优化的读模型查询
-    return s.readDB.Query(ctx, "SELECT ... FROM order_summary_view WHERE id = ?", id)
+    var dto OrderSummaryDTO
+    err := s.readDB.QueryRowContext(ctx,
+        "SELECT id, total, item_count FROM order_summary_view WHERE id = $1", id,
+    ).Scan(&dto.ID, &dto.Total, &dto.ItemCount)
+    if err != nil {
+        return nil, fmt.Errorf("query order summary %s: %w", id, err)
+    }
+    return &dto, nil
 }
 ```
 
@@ -274,13 +301,13 @@ type Subscriber interface {
     Subscribe(ctx context.Context, topic string, handler func(Message)) error
 }
 
-// 使用 Kafka
+// 使用 Kafka（confluent-kafka-go/v2 v2.14.1）
 func (p *KafkaPublisher) Publish(ctx context.Context, topic string, msg Message) error {
     return p.producer.Produce(&kafka.Message{
-        TopicPartition: kafka.TopicPartition{Topic: &topic},
+        TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
         Key:            []byte(msg.Key),
         Value:          msg.Data,
-    }, nil)
+    }, nil) // 投递结果通过 producer.Events() 异步回报
 }
 ```
 
@@ -290,8 +317,8 @@ func (p *KafkaPublisher) Publish(ctx context.Context, topic string, msg Message)
 
 ```go
 func startConsumers(ctx context.Context, queue Queue, workers int, handler func(Message) error) {
-    for i := 0; i < workers; i++ {
-        go func(workerID int) {
+    for workerID := range workers {
+        go func() {
             for {
                 select {
                 case <-ctx.Done():
@@ -302,13 +329,14 @@ func startConsumers(ctx context.Context, queue Queue, workers int, handler func(
                         continue
                     }
                     if err := handler(msg); err != nil {
+                        log.Printf("worker %d: handle failed: %v", workerID, err)
                         queue.Nack(ctx, msg)
                     } else {
                         queue.Ack(ctx, msg)
                     }
                 }
             }
-        }(i)
+        }()
     }
 }
 ```
@@ -436,9 +464,10 @@ func (r *StranglerRouter) GetUserWithShadow(ctx context.Context, id string) (*Us
     // 始终返回旧系统结果
     result, err := r.legacyService.GetUser(ctx, id)
 
-    // 异步调用新系统并比较
+    // 异步调用新系统并比较；脱离请求 ctx 的取消，保留其 value（trace 等）
+    shadowCtx := context.WithoutCancel(ctx)
     go func() {
-        newResult, newErr := r.newService.GetUser(ctx, id)
+        newResult, newErr := r.newService.GetUser(shadowCtx, id)
         r.compare("GetUser", result, newResult, err, newErr)
     }()
 
@@ -466,7 +495,11 @@ func (p *SidecarProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     defer span.End()
 
     // 代理到主应用
-    proxyReq, _ := http.NewRequestWithContext(ctx, r.Method, p.target+r.URL.Path, r.Body)
+    proxyReq, err := http.NewRequestWithContext(ctx, r.Method, p.target+r.URL.Path, r.Body)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
     resp, err := http.DefaultClient.Do(proxyReq)
     if err != nil {
         span.RecordError(err)
@@ -501,7 +534,10 @@ func (a *Ambassador) Do(ctx context.Context, req *http.Request) (*http.Response,
     }
 
     // 认证
-    token, _ := a.auth.GetToken(ctx)
+    token, err := a.auth.GetToken(ctx)
+    if err != nil {
+        return nil, fmt.Errorf("get token: %w", err)
+    }
     req.Header.Set("Authorization", "Bearer "+token)
 
     // 熔断 + 代理

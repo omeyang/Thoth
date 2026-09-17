@@ -1,4 +1,4 @@
-# 逃逸分析案例集（Go 1.25.9+）
+# 逃逸分析案例集（基线 go1.24.6）
 
 ## 为什么关心逃逸
 
@@ -86,7 +86,7 @@ func Log(id int) {
     bufPool.Put(bp)
 }
 
-// 或直接用 log/slog（1.21+，有 zero-alloc handler 实现）
+// 或直接用 log/slog（Handler 可做到零分配）
 slog.Info("event", "id", id)
 ```
 
@@ -201,7 +201,7 @@ func lookup(m map[string]int, a, b string) int {
 
 ---
 
-## 案例 7：slice 传给 `...interface{}` 参数
+## 案例 7：slice 传给 `...any` 参数
 
 ```go
 func Sum(xs []int) int {
@@ -331,7 +331,7 @@ func filter(src []int) []int {
 ```go
 dst := make([]int, 0, len(src))
 for _, x := range src { if x > 0 { dst = append(dst, x) } }
-return slices.Clip(dst)   // Go 1.21+：缩 cap 到 len
+return slices.Clip(dst)   // 缩 cap 到 len
 ```
 
 ---
@@ -363,9 +363,10 @@ type RequestCtx struct { UserID int; TraceID string; ... }
 
 **修复**（按效果排序）：
 
-1. 迁移到 `encoding/json/v2`（Go 1.25 实验，`GOEXPERIMENT=jsonv2`）—— 设计上减少反射、更快
-2. 代码生成：`easyjson`、`ffjson`、`go-json`
-3. 手写序列化（`strconv.Append*`）
+1. 代码生成：`easyjson`、`go-json`——编译期生成 Marshal/Unmarshal，去掉反射和装箱
+2. 手写序列化（`strconv.Append*` + `append`），配合 `sync.Pool` 复用输出缓冲
+3. 大文档流式解析：`json.NewDecoder(r)` + `Token()`/`Decode` 逐段处理，避免整棵树进堆
+4. 只是想减小输出体积：Go 1.24 `encoding/json` 的 `omitzero` tag 跳过零值字段，但它不减少分配
 
 ---
 
@@ -440,7 +441,7 @@ if errors.Is(err, ErrNotFound) { ... }   // 遍历 error 链
 if err == ErrNotFound { ... }   // 仅当不需要堆栈信息
 
 // 或用 errors.Join 而非嵌套 Wrap
-return errors.Join(ErrNotFound, opErr)   // Go 1.20+
+return errors.Join(ErrNotFound, opErr)
 ```
 
 ---

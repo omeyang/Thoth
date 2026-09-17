@@ -1,59 +1,57 @@
 {
   "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${GITHUB_TOKEN}"
+      }
+    },
     "kubernetes": {
+      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "kubernetes-mcp-server@latest"],
-      "type": "stdio"
+      "args": ["-y", "kubernetes-mcp-server@latest"]
+    },
+    "mongodb": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "mongodb-mcp-server", "--readOnly"],
+      "env": {
+        "MDB_MCP_CONNECTION_STRING": "${MONGODB_URI}"
+      }
+    },
+    "redis": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "redis-mcp-server@latest", "redis-mcp-server", "--url", "${REDIS_URL:-redis://localhost:6379/0}"]
     },
     "clickhouse": {
+      "type": "stdio",
       "command": "uvx",
       "args": ["mcp-clickhouse"],
       "env": {
-        "CLICKHOUSE_HOST": "${CLICKHOUSE_HOST}",
-        "CLICKHOUSE_PORT": "${CLICKHOUSE_PORT}",
-        "CLICKHOUSE_USER": "${CLICKHOUSE_USER}",
-        "CLICKHOUSE_PASSWORD": "${CLICKHOUSE_PASSWORD}",
-        "CLICKHOUSE_SECURE": "${CLICKHOUSE_SECURE}"
-      },
-      "type": "stdio"
-    },
-    "redis": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-redis", "${REDIS_URL}"],
-      "type": "stdio"
-    },
-    "mongodb": {
-      "command": "npx",
-      "args": ["-y", "mongodb-mcp-server"],
-      "env": {
-        "MONGODB_URI": "${MONGODB_URI}",
-        "MONGO_DEFAULT_DATABASE": "${MONGO_DEFAULT_DATABASE}"
-      },
-      "type": "stdio"
+        "CLICKHOUSE_HOST": "${CLICKHOUSE_HOST:-localhost}",
+        "CLICKHOUSE_PORT": "${CLICKHOUSE_PORT:-8123}",
+        "CLICKHOUSE_USER": "${CLICKHOUSE_USER:-default}",
+        "CLICKHOUSE_PASSWORD": "${CLICKHOUSE_PASSWORD:-}",
+        "CLICKHOUSE_SECURE": "${CLICKHOUSE_SECURE:-false}"
+      }
     },
     "kafka": {
+      "type": "stdio",
       "command": "go",
       "args": ["run", "github.com/tuannvm/kafka-mcp-server@latest"],
       "env": {
-        "KAFKA_BROKERS": "${KAFKA_BROKERS}",
-        "KAFKA_SASL_MECHANISM": "${KAFKA_SASL_MECHANISM}",
-        "KAFKA_SASL_USERNAME": "${KAFKA_SASL_USERNAME}",
-        "KAFKA_SASL_PASSWORD": "${KAFKA_SASL_PASSWORD}"
-      },
-      "type": "stdio"
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
-      },
-      "type": "stdio"
+        "KAFKA_BROKERS": "${KAFKA_BROKERS:-localhost:9092}",
+        "KAFKA_SASL_MECHANISM": "${KAFKA_SASL_MECHANISM:-}",
+        "KAFKA_SASL_USERNAME": "${KAFKA_SASL_USERNAME:-}",
+        "KAFKA_SASL_PASSWORD": "${KAFKA_SASL_PASSWORD:-}"
+      }
     },
     "sequential-thinking": {
+      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-      "type": "stdio"
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
     }
   }
 }

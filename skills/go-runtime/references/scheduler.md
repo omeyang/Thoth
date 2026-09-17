@@ -1,4 +1,4 @@
-# GMP 调度器深度（Go 1.25.9+）
+# GMP 调度器深度（基线 go1.24.6）
 
 聚焦 SKILL.md §1 没展开的细节：数据结构、work-stealing 算法、sysmon、netpoll 融合。
 
@@ -231,25 +231,43 @@ GODEBUG=schedtrace=1000 ./app 2>&1 | head -100
 
 ---
 
-## 8. GOMAXPROCS 设置（Go 1.25+ 自动）
+## 8. GOMAXPROCS 设置（容器内用 automaxprocs）
 
 ### 8.1 历史
 
 - 1.4 前：默认 1
-- 1.5+：默认 `runtime.NumCPU()`
-- 容器时代：`NumCPU` = 宿主机核数，不等于容器 quota
-- 1.25+：自动读 cgroup CPU quota
+- 1.5 起：默认 `runtime.NumCPU()`
+- 容器时代：`NumCPU` 是宿主机可见核数（受 cpuset 影响），不等于 cgroup CPU quota；Go 1.24 运行时不读 quota
 
-### 8.2 1.25 新行为
+### 8.2 P 数超过 quota 的后果
 
-Linux cgroup v1/v2 检测：`/sys/fs/cgroup/cpu.max`（v2）或 `cpu.cfs_quota_us` / `cpu.cfs_period_us`（v1）。
+quota 2 核、宿主 64 核 → P = 64。运行时可同时跑 64 个 M，但 CFS 每 100 ms 周期只给 200 ms CPU 时间，配额耗尽后全部线程被节流（throttled）到周期结束，表现为周期性延迟尖刺。GC 的 25% 后台 mark worker 也按 P 数分配，进一步放大抖动。
 
-```bash
-GODEBUG=containermaxprocs=1 ./app
-# 输出：runtime: GOMAXPROCS set to 4 from container CPU quota (quota=400000, period=100000)
+### 8.3 `go.uber.org/automaxprocs`（v1.6.0）
+
+```go
+import _ "go.uber.org/automaxprocs"
 ```
 
-### 8.3 手动覆盖
+init 时读取 cgroup v2 `cpu.max` 或 v1 `cpu.cfs_quota_us`/`cpu.cfs_period_us`，设置 `GOMAXPROCS = max(1, floor(quota/period))`。`GOMAXPROCS` 环境变量已设时不覆盖。需要日志或下限时用 `maxprocs.Set`：
+
+```go
+import (
+    "log"
+
+    "go.uber.org/automaxprocs/maxprocs"
+)
+
+func init() {
+    if _, err := maxprocs.Set(maxprocs.Logger(log.Printf), maxprocs.Min(2)); err != nil {
+        log.Printf("automaxprocs: %v", err)
+    }
+}
+```
+
+限制：只在启动时读一次，quota 在运行期被调整不会跟随；没有 quota（只有 cpu.shares）时保持 `NumCPU()`。
+
+### 8.4 手动覆盖
 
 ```bash
 GOMAXPROCS=8 ./app
@@ -261,7 +279,7 @@ GOMAXPROCS=8 ./app
 runtime.GOMAXPROCS(8)
 ```
 
-**几乎不需要手动设**。1.25 的自动检测覆盖 99% 场景。
+场景：CPU 型任务且愿意承受少量节流时设为略高于 quota；或 quota 频繁变动的环境自己按需 `runtime.GOMAXPROCS`。其余情况交给 automaxprocs。
 
 ---
 
@@ -293,5 +311,4 @@ runtime.GOMAXPROCS(8)
 - **1.1**: 引入 P，work-stealing
 - **1.14**: 信号抢占
 - **1.19**: soft memory limit 改变 GC pacer 与调度协作
-- **1.22**: 更平滑的 pacer，sysmon 频率调整
-- **1.25**: 容器感知 GOMAXPROCS；Flight Recorder 给 trace 更细粒度
+- **1.24**: 调度器本身无大改；map 换 Swiss Tables、`sync.Map` 换 HashTrieMap 影响的是锁竞争特征而非调度

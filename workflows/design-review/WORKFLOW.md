@@ -11,10 +11,10 @@
 | workflow | 用途 | 与本工作流关系 |
 |---|---|---|
 | `adversarial-review/` | git diff / 代码包审查 | 同级、独立；骨架可借鉴，prompt 全新 |
-| `code-review/` | 单模型代码审查 | 不相关 |
-| `reqloop/` `reqloop-lite/` | 需求迭代 | 上游可衔接：reqloop 产出需求 → 本工作流审设计 |
-| `tdd/` | TDD 流程 | 下游可衔接：本工作流收敛 → tdd 写测试 + 实现 |
-| `deploy/` | 部署流程 | 不相关 |
+| `cr` 技能 | 单模型代码审查 | 不相关 |
+| `reqloop` / `reqloop-lite` 技能 | 需求迭代 | 上游可衔接：reqloop 产出需求 → 本工作流审设计 |
+| `tdd-go` 技能 | TDD 流程 | 下游可衔接：本工作流收敛 → tdd-go 写测试 + 实现 |
+| `deploy-k8s` 技能 | 部署流程 | 不相关 |
 
 允许部分代码冗余（沉淀经验值得），效果优先于代码节俭。
 
@@ -55,7 +55,7 @@ export THOTH_PROFILES=/path/to/private-profiles
 不适用：
 - 代码审查（用 `adversarial-review/`）
 - 单文件文档拼写 / 格式检查（用 `make lint`）
-- 需求收集 / 用户故事评审（用 `reqloop/`）
+- 需求收集 / 用户故事评审（用 `reqloop` 技能）
 
 ---
 

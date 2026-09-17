@@ -1,13 +1,13 @@
 ---
 name: golang-patterns
 description: "Go 惯用模式专家 - 简洁设计、零值可用、接口设计、错误处理、并发模式、内存优化、项目布局。适用：编写新 Go 代码、代码审查、重构优化、性能调优、项目结构设计。不适用：非 Go 语言项目、纯业务逻辑讨论（无 Go 模式需求）、底层系统编程（CGO/汇编）。触发词：Go pattern, idiomatic Go, error handling, concurrency, goroutine, channel, interface, option pattern, sync.Pool, 惯用法, 模式, 并发, 错误处理"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # Go 惯用模式专家
 
 应用 Go 惯用模式编写或审查代码：$ARGUMENTS
+
+基线：go1.24.6。示例只依赖标准库与 `golang.org/x/sync v0.19.0`。
 
 ---
 
@@ -76,8 +76,23 @@ func GetUser(id string) (*User, error) {
 ## 内存和性能
 
 - **预分配切片**：`make([]Result, 0, len(items))`
-- **sync.Pool**：频繁分配的对象（如 bytes.Buffer）复用
+- **sync.Pool**：频繁分配的对象（如 bytes.Buffer）复用，`New: func() any`，归还前 `Reset()`，不要返回池内对象的内部切片
 - **避免循环中的字符串拼接**：使用 `strings.Builder` 或 `strings.Join`
+
+---
+
+## Go 1.24 惯用法（优先使用标准库）
+
+- **整数 range**：`for i := range n`，替代 `for i := 0; i < n; i++`；循环变量每次迭代独立，不再需要 `i := i`
+- **slices / maps 包**：`slices.Sort`、`slices.Contains`、`slices.Clone`、`maps.Keys`（返回 `iter.Seq`），替代手写循环
+- **内建 min / max / clear**：`clear(m)` 清空 map，`min(a, b)` 替代自定义辅助函数
+- **迭代器**：对外暴露序列用 `iter.Seq[T]` / `iter.Seq2[K, V]`，配合 `slices.Collect`、`maps.Collect`
+- **strings.Lines / SplitSeq / FieldsSeq**：按需惰性切分，不分配整份切片
+- **math/rand/v2**：`rand.IntN(n)`、`rand.N(d)`，自动播种，不需要也不应手动播种
+- **泛型类型别名**：`type Set[T comparable] = map[T]struct{}`
+- **omitzero**：`encoding/json` 的 `json:"t,omitzero"` 让零值 `time.Time`、结构体也能省略
+- **弱引用与清理**：缓存用 `weak.Pointer[T]`，资源终结用 `runtime.AddCleanup`（替代 `SetFinalizer`）
+- **受限文件访问**：`os.Root` 防止路径穿越
 
 ---
 

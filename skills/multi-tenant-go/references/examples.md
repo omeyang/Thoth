@@ -2,1344 +2,1064 @@
 
 ## 目录
 
-- [租户上下文定义](#租户上下文定义)
-- [HTTP 中间件](#http-中间件)
-- [gRPC 拦截器](#grpc-拦截器)
-- [数据隔离](#数据隔离)
-- [租户感知缓存](#租户感知缓存)
-- [消息队列租户隔离](#消息队列租户隔离)
-- [租户生命周期管理](#租户生命周期管理)
+- [租户上下文（context.go）](#租户上下文contextgo)
+- [HTTP 中间件与跨服务传播（http.go）](#http-中间件与跨服务传播httpgo)
+- [gRPC 拦截器（grpc.go）](#grpc-拦截器grpcgo)
+- [数据隔离：MongoDB 与 PostgreSQL（repo.go）](#数据隔离mongodb-与-postgresqlrepogo)
+- [租户感知缓存（cache.go）](#租户感知缓存cachego)
+- [消息队列：Kafka 与 Pulsar（mq.go）](#消息队列kafka-与-pulsarmqgo)
+- [租户生命周期（lifecycle.go）](#租户生命周期lifecyclego)
 
 ---
 
-## 租户上下文定义
+所有代码在 go1.24.6 下通过 `go vet`，统一放在 `package tenant`（按文件拆分展示）。依赖版本：
 
-### Context Key 与基础类型
+```text
+go get google.golang.org/grpc@v1.80.0
+go get go.mongodb.org/mongo-driver/v2@v2.8.2
+go get github.com/redis/go-redis/v9@v9.22.0
+go get github.com/confluentinc/confluent-kafka-go/v2@v2.14.1
+go get github.com/apache/pulsar-client-go@v0.20.0
+go get github.com/google/uuid@v1.6.0
+```
+
+---
+
+## 租户上下文（context.go）
+
+Context key 用私有结构体类型，`With*` 只返回 `context.Context`，提取函数零值安全。
 
 ```go
 package tenant
 
 import (
-    "context"
-    "errors"
+	"context"
+	"errors"
 )
 
-// Context Key 使用 typed string 防止冲突
-type contextKey string
+// contextKey 使用私有类型防止与其他包的 key 冲突
+type contextKey struct{ name string }
 
-const (
-    keyPlatformID = contextKey("tenant:platform_id")
-    keyTenantID   = contextKey("tenant:tenant_id")
-    keyTenantName = contextKey("tenant:tenant_name")
-)
-
-// 错误定义
 var (
-    ErrNilContext        = errors.New("tenant: nil context")
-    ErrEmptyTenantID     = errors.New("tenant: empty tenant_id")
-    ErrEmptyTenantName   = errors.New("tenant: empty tenant_name")
-    ErrMissingTenantID   = errors.New("tenant: missing tenant_id in context")
-    ErrMissingTenantName = errors.New("tenant: missing tenant_name in context")
-    ErrMissingPlatformID = errors.New("tenant: missing platform_id in context")
+	keyTenantID   = contextKey{"tenant_id"}
+	keyTenantName = contextKey{"tenant_name"}
 )
 
-// TenantInfo 请求级租户信息
-type TenantInfo struct {
-    TenantID   string
-    TenantName string
+var (
+	ErrEmptyTenantID   = errors.New("tenant: empty tenant_id")
+	ErrEmptyTenantName = errors.New("tenant: empty tenant_name")
+	ErrMissingTenantID = errors.New("tenant: missing tenant_id in context")
+)
+
+// Info 请求级租户信息
+type Info struct {
+	TenantID   string
+	TenantName string
 }
 
-func (t TenantInfo) IsEmpty() bool { return t.TenantID == "" && t.TenantName == "" }
+func (t Info) IsEmpty() bool { return t.TenantID == "" && t.TenantName == "" }
 
-func (t TenantInfo) Validate() error {
-    if t.TenantID == "" {
-        return ErrEmptyTenantID
-    }
-    if t.TenantName == "" {
-        return ErrEmptyTenantName
-    }
-    return nil
+func (t Info) Validate() error {
+	if t.TenantID == "" {
+		return ErrEmptyTenantID
+	}
+	if t.TenantName == "" {
+		return ErrEmptyTenantName
+	}
+	return nil
 }
 
-// Identity 完整身份信息（平台 + 租户）
-type Identity struct {
-    PlatformID string
-    TenantID   string
-    TenantName string
+// ---------- 注入 ----------
+
+func WithTenantID(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, keyTenantID, tenantID)
 }
 
-func (i Identity) Validate() error {
-    if i.PlatformID == "" {
-        return ErrMissingPlatformID
-    }
-    if i.TenantID == "" {
-        return ErrMissingTenantID
-    }
-    if i.TenantName == "" {
-        return ErrMissingTenantName
-    }
-    return nil
+func WithTenantName(ctx context.Context, tenantName string) context.Context {
+	return context.WithValue(ctx, keyTenantName, tenantName)
 }
 
-func (i Identity) IsComplete() bool {
-    return i.PlatformID != "" && i.TenantID != "" && i.TenantName != ""
-}
-```
-
-### Context 注入与提取
-
-```go
-// === 注入函数 ===
-
-func WithTenantID(ctx context.Context, tenantID string) (context.Context, error) {
-    if ctx == nil {
-        return nil, ErrNilContext
-    }
-    return context.WithValue(ctx, keyTenantID, tenantID), nil
+// WithInfo 批量注入，只注入非空字段
+func WithInfo(ctx context.Context, info Info) context.Context {
+	if info.TenantID != "" {
+		ctx = WithTenantID(ctx, info.TenantID)
+	}
+	if info.TenantName != "" {
+		ctx = WithTenantName(ctx, info.TenantName)
+	}
+	return ctx
 }
 
-func WithTenantName(ctx context.Context, tenantName string) (context.Context, error) {
-    if ctx == nil {
-        return nil, ErrNilContext
-    }
-    return context.WithValue(ctx, keyTenantName, tenantName), nil
-}
-
-func WithPlatformID(ctx context.Context, platformID string) (context.Context, error) {
-    if ctx == nil {
-        return nil, ErrNilContext
-    }
-    return context.WithValue(ctx, keyPlatformID, platformID), nil
-}
-
-// WithTenantInfo 批量注入（仅注入非空字段）
-func WithTenantInfo(ctx context.Context, info TenantInfo) (context.Context, error) {
-    if ctx == nil {
-        return nil, ErrNilContext
-    }
-    var err error
-    if info.TenantID != "" {
-        ctx, err = WithTenantID(ctx, info.TenantID)
-        if err != nil {
-            return nil, err
-        }
-    }
-    if info.TenantName != "" {
-        ctx, err = WithTenantName(ctx, info.TenantName)
-        if err != nil {
-            return nil, err
-        }
-    }
-    return ctx, nil
-}
-
-// WithIdentity 批量注入完整身份（仅非空字段）
-func WithIdentity(ctx context.Context, id Identity) (context.Context, error) {
-    if ctx == nil {
-        return nil, ErrNilContext
-    }
-    var err error
-    if id.PlatformID != "" {
-        ctx, err = WithPlatformID(ctx, id.PlatformID)
-        if err != nil {
-            return nil, err
-        }
-    }
-    if id.TenantID != "" {
-        ctx, err = WithTenantID(ctx, id.TenantID)
-        if err != nil {
-            return nil, err
-        }
-    }
-    if id.TenantName != "" {
-        ctx, err = WithTenantName(ctx, id.TenantName)
-        if err != nil {
-            return nil, err
-        }
-    }
-    return ctx, nil
-}
-
-// === 提取函数（零值安全）===
+// ---------- 提取（零值安全） ----------
 
 func TenantID(ctx context.Context) string {
-    if ctx == nil {
-        return ""
-    }
-    if v, ok := ctx.Value(keyTenantID).(string); ok {
-        return v
-    }
-    return ""
+	v, _ := ctx.Value(keyTenantID).(string)
+	return v
 }
 
 func TenantName(ctx context.Context) string {
-    if ctx == nil {
-        return ""
-    }
-    if v, ok := ctx.Value(keyTenantName).(string); ok {
-        return v
-    }
-    return ""
+	v, _ := ctx.Value(keyTenantName).(string)
+	return v
 }
 
-func PlatformID(ctx context.Context) string {
-    if ctx == nil {
-        return ""
-    }
-    if v, ok := ctx.Value(keyPlatformID).(string); ok {
-        return v
-    }
-    return ""
+func FromContext(ctx context.Context) Info {
+	return Info{TenantID: TenantID(ctx), TenantName: TenantName(ctx)}
 }
 
-func GetTenantInfo(ctx context.Context) TenantInfo {
-    return TenantInfo{
-        TenantID:   TenantID(ctx),
-        TenantName: TenantName(ctx),
-    }
-}
-
-func GetIdentity(ctx context.Context) Identity {
-    return Identity{
-        PlatformID: PlatformID(ctx),
-        TenantID:   TenantID(ctx),
-        TenantName: TenantName(ctx),
-    }
-}
-
-// === 强制提取（业务必需场景）===
-
+// RequireTenantID 业务必需场景：缺失即报错
 func RequireTenantID(ctx context.Context) (string, error) {
-    if ctx == nil {
-        return "", ErrNilContext
-    }
-    v := TenantID(ctx)
-    if v == "" {
-        return "", ErrMissingTenantID
-    }
-    return v, nil
-}
-
-func RequireTenantName(ctx context.Context) (string, error) {
-    if ctx == nil {
-        return "", ErrNilContext
-    }
-    v := TenantName(ctx)
-    if v == "" {
-        return "", ErrMissingTenantName
-    }
-    return v, nil
+	v := TenantID(ctx)
+	if v == "" {
+		return "", ErrMissingTenantID
+	}
+	return v, nil
 }
 ```
 
 ---
 
-## HTTP 中间件
+## HTTP 中间件与跨服务传播（http.go）
 
-### 完整 HTTP 中间件（含追踪传播）
+`Requirement` 决定校验强度：网关用 `NeedTenant`，内部服务用 `NeedTenantID`。
 
 ```go
 package tenant
 
 import (
-    "net/http"
-    "strings"
+	"context"
+	"net/http"
+	"strings"
 )
 
-// HTTP Header 常量
 const (
-    HeaderPlatformID = "X-Platform-ID"
-    HeaderTenantID   = "X-Tenant-ID"
-    HeaderTenantName = "X-Tenant-Name"
-    HeaderTraceID    = "X-Trace-ID"
-    HeaderSpanID     = "X-Span-ID"
-    HeaderRequestID  = "X-Request-ID"
+	HeaderTenantID   = "X-Tenant-ID"
+	HeaderTenantName = "X-Tenant-Name"
 )
 
-// ExtractFromHTTPHeader 从 HTTP Header 提取租户信息
-func ExtractFromHTTPHeader(h http.Header) TenantInfo {
-    if h == nil {
-        return TenantInfo{}
-    }
-    return TenantInfo{
-        TenantID:   strings.TrimSpace(h.Get(HeaderTenantID)),
-        TenantName: strings.TrimSpace(h.Get(HeaderTenantName)),
-    }
+// ExtractFromHeader 从 HTTP Header 提取租户信息
+func ExtractFromHeader(h http.Header) Info {
+	return Info{
+		TenantID:   strings.TrimSpace(h.Get(HeaderTenantID)),
+		TenantName: strings.TrimSpace(h.Get(HeaderTenantName)),
+	}
 }
 
-// MiddlewareOption 中间件选项
-type MiddlewareOption func(*middlewareConfig)
+// Requirement 中间件校验级别
+type Requirement int
 
-type middlewareConfig struct {
-    requireTenant   bool // 要求 TenantID + TenantName
-    requireTenantID bool // 仅要求 TenantID
+const (
+	Optional     Requirement = iota // 不校验
+	NeedTenantID                    // 只要求 tenant_id
+	NeedTenant                      // 要求 tenant_id + tenant_name
+)
+
+func (r Requirement) check(info Info) error {
+	switch r {
+	case NeedTenant:
+		return info.Validate()
+	case NeedTenantID:
+		if info.TenantID == "" {
+			return ErrEmptyTenantID
+		}
+	}
+	return nil
 }
 
-// WithRequireTenant 要求完整租户信息（TenantID + TenantName）
-func WithRequireTenant() MiddlewareOption {
-    return func(cfg *middlewareConfig) {
-        cfg.requireTenant = true
-        cfg.requireTenantID = false
-    }
+// HTTPMiddleware 提取 Header 并注入 Context
+func HTTPMiddleware(req Requirement) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			info := ExtractFromHeader(r.Header)
+			if err := req.check(info); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithInfo(r.Context(), info)))
+		})
+	}
 }
 
-// WithRequireTenantID 仅要求 TenantID
-func WithRequireTenantID() MiddlewareOption {
-    return func(cfg *middlewareConfig) {
-        cfg.requireTenantID = true
-        cfg.requireTenant = false
-    }
-}
-
-// HTTPMiddleware 返回带选项的 HTTP 中间件
-func HTTPMiddleware(opts ...MiddlewareOption) func(http.Handler) http.Handler {
-    cfg := &middlewareConfig{}
-    for _, opt := range opts {
-        opt(cfg)
-    }
-
-    return func(next http.Handler) http.Handler {
-        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            info := ExtractFromHTTPHeader(r.Header)
-
-            // 校验
-            if cfg.requireTenant {
-                if err := info.Validate(); err != nil {
-                    http.Error(w, err.Error(), http.StatusBadRequest)
-                    return
-                }
-            } else if cfg.requireTenantID && info.TenantID == "" {
-                http.Error(w, ErrEmptyTenantID.Error(), http.StatusBadRequest)
-                return
-            }
-
-            // 注入 context
-            ctx, err := WithTenantInfo(r.Context(), info)
-            if err != nil {
-                http.Error(w, err.Error(), http.StatusInternalServerError)
-                return
-            }
-
-            next.ServeHTTP(w, r.WithContext(ctx))
-        })
-    }
-}
-
-// InjectToRequest 将租户信息注入 HTTP 请求（跨服务传播）
-//
-// 使用 Set 语义覆盖已存在的 Header，防止 tenant leakage。
-// 如果 req 为 nil 或 req.Header 为 nil，静默返回（防御性编程）。
+// InjectToRequest 调用下游服务时注入 Header。
+// 用 Set 覆盖同名 Header，避免上游残留值造成 tenant leakage
 func InjectToRequest(ctx context.Context, req *http.Request) {
-    if req == nil || req.Header == nil {
-        return
-    }
-
-    if tid := TenantID(ctx); tid != "" {
-        req.Header.Set(HeaderTenantID, tid)
-    }
-    if tname := TenantName(ctx); tname != "" {
-        req.Header.Set(HeaderTenantName, tname)
-    }
-    if pid := PlatformID(ctx); pid != "" {
-        req.Header.Set(HeaderPlatformID, pid)
-    }
+	if req == nil {
+		return
+	}
+	if req.Header == nil {
+		req.Header = http.Header{}
+	}
+	if tid := TenantID(ctx); tid != "" {
+		req.Header.Set(HeaderTenantID, tid)
+	}
+	if tname := TenantName(ctx); tname != "" {
+		req.Header.Set(HeaderTenantName, tname)
+	}
 }
 
-// InjectTenantToHeader 将 TenantInfo 直接注入 Header
-func InjectTenantToHeader(h http.Header, info TenantInfo) {
-    if h == nil {
-        return
-    }
-    if info.TenantID != "" {
-        h.Set(HeaderTenantID, info.TenantID)
-    }
-    if info.TenantName != "" {
-        h.Set(HeaderTenantName, info.TenantName)
-    }
+// TenantTransport 作为 http.Client 的 Transport，自动传播租户信息
+type TenantTransport struct {
+	Base http.RoundTripper
 }
-```
 
-### 使用示例
+func (t *TenantTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	clone := req.Clone(req.Context())
+	InjectToRequest(req.Context(), clone)
+	return base.RoundTrip(clone)
+}
 
-```go
-mux := http.NewServeMux()
-mux.HandleFunc("/api/assets", handleListAssets)
+// 使用示例
+func NewRouter() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/assets", func(w http.ResponseWriter, r *http.Request) {
+		tenantID, err := RequireTenantID(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte("tenant " + tenantID))
+	})
+	// 网关入口：要求完整租户信息；内部服务可改为 NeedTenantID
+	return HTTPMiddleware(NeedTenant)(mux)
+}
 
-// 网关层：必须有完整租户信息
-handler := HTTPMiddleware(WithRequireTenant())(mux)
-
-// 或内部服务：仅要求 TenantID
-handler = HTTPMiddleware(WithRequireTenantID())(mux)
-
-// 跨服务调用时传播
-func callDownstream(ctx context.Context, url string) (*http.Response, error) {
-    req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-    if err != nil {
-        return nil, err
-    }
-    InjectToRequest(ctx, req)
-    return http.DefaultClient.Do(req)
+func CallDownstream(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	InjectToRequest(ctx, req)
+	return http.DefaultClient.Do(req)
 }
 ```
 
 ---
 
-## gRPC 拦截器
+## gRPC 拦截器（grpc.go）
 
-### 完整 gRPC 拦截器（含流式）
+metadata key 必须小写；注入用 `md.Set` 覆盖，避免 `Append` 累积多值。客户端用 `grpc.NewClient`。
 
 ```go
 package tenant
 
 import (
-    "context"
-    "strings"
+	"context"
+	"strings"
 
-    "google.golang.org/grpc"
-    "google.golang.org/grpc/codes"
-    "google.golang.org/grpc/metadata"
-    "google.golang.org/grpc/status"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
-// gRPC Metadata Key（小写加连字符）
+// gRPC metadata key 必须小写
 const (
-    MetaPlatformID = "x-platform-id"
-    MetaTenantID   = "x-tenant-id"
-    MetaTenantName = "x-tenant-name"
-    MetaTraceID    = "x-trace-id"
-    MetaSpanID     = "x-span-id"
-    MetaRequestID  = "x-request-id"
+	MetaTenantID   = "x-tenant-id"
+	MetaTenantName = "x-tenant-name"
 )
 
-// ExtractFromMetadata 从 gRPC Metadata 提取租户信息
-func ExtractFromMetadata(md metadata.MD) TenantInfo {
-    if md == nil {
-        return TenantInfo{}
-    }
-    return TenantInfo{
-        TenantID:   getMetaValue(md, MetaTenantID),
-        TenantName: getMetaValue(md, MetaTenantName),
-    }
+func ExtractFromMetadata(md metadata.MD) Info {
+	return Info{
+		TenantID:   metaValue(md, MetaTenantID),
+		TenantName: metaValue(md, MetaTenantName),
+	}
 }
 
-func getMetaValue(md metadata.MD, key string) string {
-    values := md.Get(key)
-    if len(values) == 0 {
-        return ""
-    }
-    return strings.TrimSpace(values[0])
+func metaValue(md metadata.MD, key string) string {
+	values := md.Get(key)
+	if len(values) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(values[0])
 }
 
-// GRPCInterceptorOption gRPC 拦截器选项
-type GRPCInterceptorOption func(*grpcInterceptorConfig)
-
-type grpcInterceptorConfig struct {
-    requireTenant   bool
-    requireTenantID bool
+func requirementToStatus(err error) error {
+	return status.Error(codes.InvalidArgument, err.Error())
 }
 
-func WithGRPCRequireTenant() GRPCInterceptorOption {
-    return func(cfg *grpcInterceptorConfig) {
-        cfg.requireTenant = true
-        cfg.requireTenantID = false
-    }
+// UnaryServerInterceptor 一元服务端拦截器
+func UnaryServerInterceptor(req Requirement) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, request any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		md, _ := metadata.FromIncomingContext(ctx)
+		info := ExtractFromMetadata(md)
+		if err := req.check(info); err != nil {
+			return nil, requirementToStatus(err)
+		}
+		return handler(WithInfo(ctx, info), request)
+	}
 }
 
-func WithGRPCRequireTenantID() GRPCInterceptorOption {
-    return func(cfg *grpcInterceptorConfig) {
-        cfg.requireTenantID = true
-        cfg.requireTenant = false
-    }
+// StreamServerInterceptor 流式服务端拦截器
+func StreamServerInterceptor(req Requirement) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		md, _ := metadata.FromIncomingContext(ss.Context())
+		info := ExtractFromMetadata(md)
+		if err := req.check(info); err != nil {
+			return requirementToStatus(err)
+		}
+		return handler(srv, &wrappedServerStream{ServerStream: ss, ctx: WithInfo(ss.Context(), info)})
+	}
 }
 
-// GRPCUnaryServerInterceptor 一元服务端拦截器
-func GRPCUnaryServerInterceptor(opts ...GRPCInterceptorOption) grpc.UnaryServerInterceptor {
-    cfg := &grpcInterceptorConfig{}
-    for _, opt := range opts {
-        opt(cfg)
-    }
-
-    return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-        // 提取
-        md, _ := metadata.FromIncomingContext(ctx)
-        tenant := ExtractFromMetadata(md)
-
-        // 校验
-        if cfg.requireTenant {
-            if err := tenant.Validate(); err != nil {
-                return nil, status.Error(codes.InvalidArgument, err.Error())
-            }
-        } else if cfg.requireTenantID && tenant.TenantID == "" {
-            return nil, status.Error(codes.InvalidArgument, ErrEmptyTenantID.Error())
-        }
-
-        // 注入
-        ctx, err := WithTenantInfo(ctx, tenant)
-        if err != nil {
-            return nil, status.Error(codes.Internal, err.Error())
-        }
-
-        return handler(ctx, req)
-    }
-}
-
-// GRPCStreamServerInterceptor 流式服务端拦截器
-func GRPCStreamServerInterceptor(opts ...GRPCInterceptorOption) grpc.StreamServerInterceptor {
-    cfg := &grpcInterceptorConfig{}
-    for _, opt := range opts {
-        opt(cfg)
-    }
-
-    return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-        md, _ := metadata.FromIncomingContext(ss.Context())
-        tenant := ExtractFromMetadata(md)
-
-        if cfg.requireTenantID && tenant.TenantID == "" {
-            return status.Error(codes.InvalidArgument, ErrEmptyTenantID.Error())
-        }
-
-        ctx, err := WithTenantInfo(ss.Context(), tenant)
-        if err != nil {
-            return status.Error(codes.Internal, err.Error())
-        }
-
-        return handler(srv, &wrappedServerStream{ServerStream: ss, ctx: ctx})
-    }
-}
-
-// wrappedServerStream 包装 ServerStream 以覆盖 Context
+// wrappedServerStream 覆盖 Context()，让 handler 拿到注入后的 ctx
 type wrappedServerStream struct {
-    grpc.ServerStream
-    ctx context.Context
+	grpc.ServerStream
+	ctx context.Context
 }
 
 func (w *wrappedServerStream) Context() context.Context { return w.ctx }
 
-// InjectToOutgoingContext 将租户信息注入 outgoing context（客户端调用）
-//
-// 使用 Set 语义覆盖同名 key，防止 tenant leakage。
+// InjectToOutgoingContext 客户端调用前注入 metadata。
+// md.Set 覆盖同名 key，避免 Append 造成多值与 tenant leakage
 func InjectToOutgoingContext(ctx context.Context) context.Context {
-    if ctx == nil {
-        ctx = context.Background()
-    }
-
-    md, ok := metadata.FromOutgoingContext(ctx)
-    if !ok {
-        md = metadata.MD{}
-    } else {
-        md = md.Copy() // 复制，避免修改原始 metadata
-    }
-
-    if tid := TenantID(ctx); tid != "" {
-        md.Set(MetaTenantID, tid)
-    }
-    if tname := TenantName(ctx); tname != "" {
-        md.Set(MetaTenantName, tname)
-    }
-    if pid := PlatformID(ctx); pid != "" {
-        md.Set(MetaPlatformID, pid)
-    }
-
-    if len(md) == 0 {
-        return ctx
-    }
-    return metadata.NewOutgoingContext(ctx, md)
+	md, ok := metadata.FromOutgoingContext(ctx)
+	if !ok {
+		md = metadata.MD{}
+	} else {
+		md = md.Copy()
+	}
+	if tid := TenantID(ctx); tid != "" {
+		md.Set(MetaTenantID, tid)
+	}
+	if tname := TenantName(ctx); tname != "" {
+		md.Set(MetaTenantName, tname)
+	}
+	if len(md) == 0 {
+		return ctx
+	}
+	return metadata.NewOutgoingContext(ctx, md)
 }
 
-// GRPCUnaryClientInterceptor 一元客户端拦截器（自动传播租户信息）
-func GRPCUnaryClientInterceptor() grpc.UnaryClientInterceptor {
-    return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-        return invoker(InjectToOutgoingContext(ctx), method, req, reply, cc, opts...)
-    }
+func UnaryClientInterceptor() grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		return invoker(InjectToOutgoingContext(ctx), method, req, reply, cc, opts...)
+	}
 }
 
-// GRPCStreamClientInterceptor 流式客户端拦截器（自动传播租户信息）
-func GRPCStreamClientInterceptor() grpc.StreamClientInterceptor {
-    return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-        return streamer(InjectToOutgoingContext(ctx), desc, cc, method, opts...)
-    }
-}
-```
-
-### gRPC 服务注册示例
-
-```go
-srv := grpc.NewServer(
-    // 服务端：自动提取租户信息
-    grpc.ChainUnaryInterceptor(
-        GRPCUnaryServerInterceptor(WithGRPCRequireTenantID()),
-    ),
-    grpc.ChainStreamInterceptor(
-        GRPCStreamServerInterceptor(WithGRPCRequireTenantID()),
-    ),
-)
-
-// 客户端：自动传播租户信息
-conn, _ := grpc.Dial(addr,
-    grpc.WithChainUnaryInterceptor(GRPCUnaryClientInterceptor()),
-    grpc.WithChainStreamInterceptor(GRPCStreamClientInterceptor()),
-)
-```
-
----
-
-## 数据隔离
-
-### MongoDB 租户隔离 Repository
-
-```go
-package repository
-
-import (
-    "context"
-    "fmt"
-
-    "go.mongodb.org/mongo-driver/v2/bson"
-    "go.mongodb.org/mongo-driver/v2/mongo"
-    "go.mongodb.org/mongo-driver/v2/mongo/options"
-)
-
-type Asset struct {
-    ID        string `bson:"_id"`
-    TenantID  string `bson:"tenant_id"`
-    Name      string `bson:"name"`
-    Status    string `bson:"status"`
-    IsDeleted bool   `bson:"is_deleted"`
+func StreamClientInterceptor() grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		return streamer(InjectToOutgoingContext(ctx), desc, cc, method, opts...)
+	}
 }
 
-type AssetRepo struct {
-    coll *mongo.Collection
+// 注册示例
+func NewGRPCServer() *grpc.Server {
+	return grpc.NewServer(
+		grpc.ChainUnaryInterceptor(UnaryServerInterceptor(NeedTenantID)),
+		grpc.ChainStreamInterceptor(StreamServerInterceptor(NeedTenantID)),
+	)
 }
 
-// FindByID 按 ID 查找（强制租户隔离）
-func (r *AssetRepo) FindByID(ctx context.Context, id string) (*Asset, error) {
-    tenantID, err := RequireTenantID(ctx)
-    if err != nil {
-        return nil, err
-    }
-
-    filter := bson.M{
-        "_id":       id,
-        "tenant_id": tenantID,
-    }
-
-    var asset Asset
-    if err := r.coll.FindOne(ctx, filter).Decode(&asset); err != nil {
-        if err == mongo.ErrNoDocuments {
-            return nil, nil
-        }
-        return nil, fmt.Errorf("find asset: %w", err)
-    }
-    return &asset, nil
-}
-
-// List 分页查询（带租户隔离）
-func (r *AssetRepo) List(ctx context.Context, status string, skip, limit int64) ([]*Asset, error) {
-    tenantID, err := RequireTenantID(ctx)
-    if err != nil {
-        return nil, err
-    }
-
-    filter := bson.M{
-        "tenant_id":  tenantID,
-        "is_deleted": false,
-    }
-    if status != "" {
-        filter["status"] = status
-    }
-
-    opts := options.Find().
-        SetSkip(skip).
-        SetLimit(limit).
-        SetSort(bson.D{{"created_at", -1}})
-
-    cursor, err := r.coll.Find(ctx, filter, opts)
-    if err != nil {
-        return nil, fmt.Errorf("list assets: %w", err)
-    }
-    defer cursor.Close(ctx)
-
-    var assets []*Asset
-    if err := cursor.All(ctx, &assets); err != nil {
-        return nil, fmt.Errorf("decode assets: %w", err)
-    }
-    return assets, nil
-}
-
-// Insert 插入时自动注入 tenant_id
-func (r *AssetRepo) Insert(ctx context.Context, asset *Asset) error {
-    tenantID, err := RequireTenantID(ctx)
-    if err != nil {
-        return err
-    }
-
-    asset.TenantID = tenantID
-    _, err = r.coll.InsertOne(ctx, asset)
-    if err != nil {
-        return fmt.Errorf("insert asset: %w", err)
-    }
-    return nil
-}
-
-// Update 更新时强制租户隔离
-func (r *AssetRepo) Update(ctx context.Context, id string, update bson.M) error {
-    tenantID, err := RequireTenantID(ctx)
-    if err != nil {
-        return err
-    }
-
-    filter := bson.M{
-        "_id":       id,
-        "tenant_id": tenantID,
-    }
-
-    result, err := r.coll.UpdateOne(ctx, filter, bson.M{"$set": update})
-    if err != nil {
-        return fmt.Errorf("update asset: %w", err)
-    }
-    if result.MatchedCount == 0 {
-        return fmt.Errorf("asset not found or access denied")
-    }
-    return nil
-}
-
-// SoftDelete 软删除（租户隔离）
-func (r *AssetRepo) SoftDelete(ctx context.Context, id string) error {
-    return r.Update(ctx, id, bson.M{"is_deleted": true})
-}
-
-// EnsureIndexes 创建租户隔离索引
-func (r *AssetRepo) EnsureIndexes(ctx context.Context) error {
-    indexes := []mongo.IndexModel{
-        // 租户 + 状态复合索引
-        {Keys: bson.D{{"tenant_id", 1}, {"status", 1}}},
-        // 租户 + 创建时间（分页排序）
-        {Keys: bson.D{{"tenant_id", 1}, {"created_at", -1}}},
-        // 租户 + ID 唯一索引
-        {
-            Keys:    bson.D{{"tenant_id", 1}, {"_id", 1}},
-            Options: options.Index().SetUnique(true),
-        },
-    }
-
-    _, err := r.coll.Indexes().CreateMany(ctx, indexes)
-    return err
-}
-```
-
-### SQL 租户隔离 (PostgreSQL)
-
-```go
-package repository
-
-import (
-    "context"
-    "database/sql"
-    "fmt"
-)
-
-type TenantRow struct {
-    ID           int64  `db:"id"`
-    TenantID     string `db:"tenant_id"`
-    TenantName   string `db:"tenant_name"`
-    Status       int    `db:"status"`
-    IsDelete     int    `db:"is_delete"`
-    ResourceID   string `db:"resource_id"`
-    ResourceType string `db:"resource_type"`
-}
-
-type TenantRepo struct {
-    db *sql.DB
-}
-
-// FindByTenantAndType 按租户ID和资源类型查询
-func (r *TenantRepo) FindByTenantAndType(ctx context.Context, tenantID, resourceType string) (*TenantRow, error) {
-    query := `
-        SELECT t.id, t.tenant_id, t.tenant_name, t.status, t.is_delete,
-               tr.resource_id, tr.resource_type
-        FROM t_tenant t
-        JOIN t_tenant_resource tr ON t.id = tr.tenant_ref_id
-        WHERE t.tenant_id = $1
-          AND tr.resource_type = $2
-          AND t.is_delete = 0`
-
-    var row TenantRow
-    err := r.db.QueryRowContext(ctx, query, tenantID, resourceType).Scan(
-        &row.ID, &row.TenantID, &row.TenantName, &row.Status, &row.IsDelete,
-        &row.ResourceID, &row.ResourceType,
-    )
-    if err == sql.ErrNoRows {
-        return nil, nil
-    }
-    if err != nil {
-        return nil, fmt.Errorf("find tenant: %w", err)
-    }
-    return &row, nil
-}
-
-// ListByType 按资源类型列出所有活跃租户
-func (r *TenantRepo) ListByType(ctx context.Context, resourceType string) ([]*TenantRow, error) {
-    query := `
-        SELECT t.id, t.tenant_id, t.tenant_name, t.status,
-               tr.resource_id, tr.resource_type
-        FROM t_tenant t
-        JOIN t_tenant_resource tr ON t.id = tr.tenant_ref_id
-        WHERE t.status = 1
-          AND t.is_delete = 0
-          AND tr.resource_type = $1
-        ORDER BY t.id`
-
-    rows, err := r.db.QueryContext(ctx, query, resourceType)
-    if err != nil {
-        return nil, fmt.Errorf("list tenants: %w", err)
-    }
-    defer rows.Close()
-
-    var tenants []*TenantRow
-    for rows.Next() {
-        var t TenantRow
-        if err := rows.Scan(&t.ID, &t.TenantID, &t.TenantName, &t.Status, &t.ResourceID, &t.ResourceType); err != nil {
-            return nil, fmt.Errorf("scan tenant: %w", err)
-        }
-        tenants = append(tenants, &t)
-    }
-    return tenants, rows.Err()
+func NewGRPCClient(target string) (*grpc.ClientConn, error) {
+	// grpc.Dial 已弃用，使用 NewClient
+	return grpc.NewClient(target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(UnaryClientInterceptor()),
+		grpc.WithChainStreamInterceptor(StreamClientInterceptor()),
+	)
 }
 ```
 
 ---
 
-## 租户感知缓存
+## 数据隔离：MongoDB 与 PostgreSQL（repo.go）
 
-### 完整租户缓存实现
-
-```go
-package cache
-
-import (
-    "context"
-    "encoding/json"
-    "errors"
-    "fmt"
-    "math/rand"
-    "time"
-
-    "github.com/redis/go-redis/v9"
-)
-
-const nullValue = "__NULL__" // 空值标记
-
-// TenantCache 租户感知缓存
-type TenantCache struct {
-    client  redis.UniversalClient
-    baseTTL time.Duration
-    jitter  time.Duration
-}
-
-// NewTenantCache 创建租户缓存
-func NewTenantCache(client redis.UniversalClient, baseTTL, jitter time.Duration) *TenantCache {
-    return &TenantCache{
-        client:  client,
-        baseTTL: baseTTL,
-        jitter:  jitter,
-    }
-}
-
-// tenantKey 生成租户隔离的缓存键
-func tenantKey(tenantID, resourceType, resourceID string) string {
-    return fmt.Sprintf("tenant:%s:%s:%s", tenantID, resourceType, resourceID)
-}
-
-// Get 获取缓存（返回 data, hit, error）
-// hit=true + data=nil 表示命中空值缓存（防穿透）
-func (c *TenantCache) Get(ctx context.Context, tenantID, resourceType, resourceID string) ([]byte, bool, error) {
-    key := tenantKey(tenantID, resourceType, resourceID)
-
-    data, err := c.client.Get(ctx, key).Bytes()
-    if errors.Is(err, redis.Nil) {
-        return nil, false, nil // 未命中
-    }
-    if err != nil {
-        return nil, false, fmt.Errorf("get cache %s: %w", key, err)
-    }
-
-    // 空值缓存命中
-    if string(data) == nullValue {
-        return nil, true, nil
-    }
-
-    return data, true, nil
-}
-
-// Set 设置缓存（data=nil 缓存空值防穿透）
-func (c *TenantCache) Set(ctx context.Context, tenantID, resourceType, resourceID string, data []byte) error {
-    key := tenantKey(tenantID, resourceType, resourceID)
-    ttl := c.randomTTL()
-
-    var value any
-    if data == nil {
-        value = nullValue
-    } else {
-        value = data
-    }
-
-    if err := c.client.Set(ctx, key, value, ttl).Err(); err != nil {
-        return fmt.Errorf("set cache %s: %w", key, err)
-    }
-    return nil
-}
-
-// Delete 删除缓存
-func (c *TenantCache) Delete(ctx context.Context, tenantID, resourceType, resourceID string) error {
-    key := tenantKey(tenantID, resourceType, resourceID)
-    return c.client.Del(ctx, key).Err()
-}
-
-// DeleteByTenant 删除租户所有缓存（租户注销时）
-func (c *TenantCache) DeleteByTenant(ctx context.Context, tenantID string) error {
-    pattern := fmt.Sprintf("tenant:%s:*", tenantID)
-    var cursor uint64
-    for {
-        keys, next, err := c.client.Scan(ctx, cursor, pattern, 100).Result()
-        if err != nil {
-            return fmt.Errorf("scan tenant keys: %w", err)
-        }
-        if len(keys) > 0 {
-            if err := c.client.Del(ctx, keys...).Err(); err != nil {
-                return fmt.Errorf("delete tenant keys: %w", err)
-            }
-        }
-        cursor = next
-        if cursor == 0 {
-            break
-        }
-    }
-    return nil
-}
-
-// randomTTL 生成随机 TTL 防止缓存雪崩
-func (c *TenantCache) randomTTL() time.Duration {
-    offset := time.Duration(rand.Int63n(int64(c.jitter)))
-    if rand.Intn(2) == 0 {
-        return c.baseTTL - offset
-    }
-    return c.baseTTL + offset
-}
-
-// GetOrLoad 缓存加载模式（Cache-Aside with tenant isolation）
-func GetOrLoad[T any](
-    ctx context.Context,
-    cache *TenantCache,
-    tenantID, resourceType, resourceID string,
-    loader func(ctx context.Context) (*T, error),
-) (*T, error) {
-    // 尝试缓存
-    data, hit, err := cache.Get(ctx, tenantID, resourceType, resourceID)
-    if err != nil {
-        return nil, err
-    }
-    if hit {
-        if data == nil {
-            return nil, nil // 空值缓存
-        }
-        var result T
-        if err := json.Unmarshal(data, &result); err != nil {
-            return nil, fmt.Errorf("unmarshal cache: %w", err)
-        }
-        return &result, nil
-    }
-
-    // 加载
-    result, err := loader(ctx)
-    if err != nil {
-        return nil, err
-    }
-
-    // 写缓存
-    if result == nil {
-        _ = cache.Set(ctx, tenantID, resourceType, resourceID, nil)
-    } else {
-        data, err := json.Marshal(result)
-        if err != nil {
-            return result, nil // 序列化失败不影响业务
-        }
-        _ = cache.Set(ctx, tenantID, resourceType, resourceID, data)
-    }
-
-    return result, nil
-}
-```
-
-### 使用示例
-
-```go
-cache := NewTenantCache(redisClient, 24*time.Hour, 1*time.Hour)
-
-func (s *TenantService) GetInfo(ctx context.Context, tenantID, resourceType string) (*TenantInfo, error) {
-    return GetOrLoad(ctx, s.cache, tenantID, resourceType, "info",
-        func(ctx context.Context) (*TenantInfo, error) {
-            return s.repo.FindByTenantAndType(ctx, tenantID, resourceType)
-        },
-    )
-}
-```
-
----
-
-## 消息队列租户隔离
-
-### Kafka 租户分区
-
-```go
-package mq
-
-import (
-    "context"
-    "encoding/json"
-    "fmt"
-
-    "github.com/confluentinc/confluent-kafka-go/v2/kafka"
-)
-
-// TenantEvent 携带租户信息的事件
-type TenantEvent struct {
-    EventID   string          `json:"event_id"`
-    EventType string          `json:"event_type"`
-    TenantID  string          `json:"tenant_id"`
-    Timestamp int64           `json:"timestamp"`
-    Payload   json.RawMessage `json:"payload"`
-}
-
-// TenantProducer 租户感知的 Kafka 生产者
-type TenantProducer struct {
-    producer *kafka.Producer
-}
-
-// Send 发送租户事件（使用 tenant_id 作为 partition key）
-func (p *TenantProducer) Send(ctx context.Context, topic string, event TenantEvent) error {
-    // 从 context 提取 tenant_id（如果事件未设置）
-    if event.TenantID == "" {
-        tenantID, err := RequireTenantID(ctx)
-        if err != nil {
-            return err
-        }
-        event.TenantID = tenantID
-    }
-
-    data, err := json.Marshal(event)
-    if err != nil {
-        return fmt.Errorf("marshal event: %w", err)
-    }
-
-    deliveryChan := make(chan kafka.Event, 1)
-    err = p.producer.Produce(&kafka.Message{
-        TopicPartition: kafka.TopicPartition{
-            Topic:     &topic,
-            Partition: kafka.PartitionAny,
-        },
-        Key:   []byte(event.TenantID), // 按 tenant_id 分区
-        Value: data,
-    }, deliveryChan)
-    if err != nil {
-        return fmt.Errorf("produce: %w", err)
-    }
-
-    e := <-deliveryChan
-    m := e.(*kafka.Message)
-    if m.TopicPartition.Error != nil {
-        return fmt.Errorf("delivery: %w", m.TopicPartition.Error)
-    }
-    return nil
-}
-
-// TenantConsumer 租户感知的消费者
-type TenantConsumer struct {
-    consumer *kafka.Consumer
-    handler  func(ctx context.Context, event TenantEvent) error
-}
-
-// Start 启动消费（自动恢复租户上下文）
-func (c *TenantConsumer) Start(ctx context.Context) error {
-    for {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        default:
-            msg, err := c.consumer.ReadMessage(-1)
-            if err != nil {
-                continue
-            }
-
-            var event TenantEvent
-            if err := json.Unmarshal(msg.Value, &event); err != nil {
-                continue // 或记录日志
-            }
-
-            // 恢复租户上下文
-            eventCtx := context.Background()
-            eventCtx, _ = WithTenantID(eventCtx, event.TenantID)
-
-            if err := c.handler(eventCtx, event); err != nil {
-                // 处理失败逻辑（重试/DLQ）
-                continue
-            }
-
-            c.consumer.CommitMessage(msg)
-        }
-    }
-}
-```
-
-### Pulsar 租户属性
-
-```go
-package mq
-
-import (
-    "context"
-    "encoding/json"
-
-    "github.com/apache/pulsar-client-go/pulsar"
-)
-
-// PulsarTenantProducer 租户感知的 Pulsar 生产者
-type PulsarTenantProducer struct {
-    producer pulsar.Producer
-}
-
-// Send 发送消息（租户信息存入 Properties）
-func (p *PulsarTenantProducer) Send(ctx context.Context, event TenantEvent) error {
-    if event.TenantID == "" {
-        tenantID, err := RequireTenantID(ctx)
-        if err != nil {
-            return err
-        }
-        event.TenantID = tenantID
-    }
-
-    data, err := json.Marshal(event)
-    if err != nil {
-        return err
-    }
-
-    _, err = p.producer.Send(ctx, &pulsar.ProducerMessage{
-        Payload:    data,
-        Key:        event.TenantID, // 分区 key
-        Properties: map[string]string{
-            "tenant_id":  event.TenantID,
-            "event_type": event.EventType,
-        },
-    })
-    return err
-}
-
-// PulsarTenantConsumer 租户感知的 Pulsar 消费者
-type PulsarTenantConsumer struct {
-    consumer pulsar.Consumer
-    handler  func(ctx context.Context, event TenantEvent) error
-}
-
-// Start 启动消费
-func (c *PulsarTenantConsumer) Start(ctx context.Context) error {
-    for {
-        msg, err := c.consumer.Receive(ctx)
-        if err != nil {
-            return err
-        }
-
-        var event TenantEvent
-        if err := json.Unmarshal(msg.Payload(), &event); err != nil {
-            c.consumer.Nack(msg)
-            continue
-        }
-
-        // 恢复租户上下文
-        eventCtx := context.Background()
-        eventCtx, _ = WithTenantID(eventCtx, event.TenantID)
-
-        if err := c.handler(eventCtx, event); err != nil {
-            c.consumer.Nack(msg)
-            continue
-        }
-
-        c.consumer.Ack(msg)
-    }
-}
-```
-
----
-
-## 租户生命周期管理
-
-### 事件驱动的租户管理
+每个查询都从 ctx 取 tenant_id 并加入过滤条件；写入时用 ctx 值覆盖请求体里的 tenant_id。
 
 ```go
 package tenant
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "time"
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 
-    "github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
+var ErrNotFound = errors.New("not found")
+
+// ---------- MongoDB：共享集合 + tenant_id 分区键 ----------
+
+type Asset struct {
+	ID        string `bson:"_id"`
+	TenantID  string `bson:"tenant_id"`
+	Name      string `bson:"name"`
+	Status    string `bson:"status"`
+	IsDeleted bool   `bson:"is_deleted"`
+}
+
+type AssetRepo struct {
+	coll *mongo.Collection
+}
+
+func NewAssetRepo(coll *mongo.Collection) *AssetRepo { return &AssetRepo{coll: coll} }
+
+// FindByID 过滤条件同时带 _id 与 tenant_id，跨租户访问返回 ErrNotFound
+func (r *AssetRepo) FindByID(ctx context.Context, id string) (*Asset, error) {
+	tenantID, err := RequireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var asset Asset
+	err = r.coll.FindOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}).Decode(&asset)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find asset: %w", err)
+	}
+	return &asset, nil
+}
+
+func (r *AssetRepo) List(ctx context.Context, status string, skip, limit int64) ([]Asset, error) {
+	tenantID, err := RequireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filter := bson.M{"tenant_id": tenantID, "is_deleted": false}
+	if status != "" {
+		filter["status"] = status
+	}
+	opts := options.Find().
+		SetSkip(skip).
+		SetLimit(limit).
+		SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := r.coll.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list assets: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var assets []Asset
+	if err := cursor.All(ctx, &assets); err != nil {
+		return nil, fmt.Errorf("decode assets: %w", err)
+	}
+	return assets, nil
+}
+
+// Insert 写入时用 ctx 中的 tenant_id 覆盖，防止调用方伪造
+func (r *AssetRepo) Insert(ctx context.Context, asset *Asset) error {
+	tenantID, err := RequireTenantID(ctx)
+	if err != nil {
+		return err
+	}
+	asset.TenantID = tenantID
+	if _, err := r.coll.InsertOne(ctx, asset); err != nil {
+		return fmt.Errorf("insert asset: %w", err)
+	}
+	return nil
+}
+
+func (r *AssetRepo) Update(ctx context.Context, id string, update bson.M) error {
+	tenantID, err := RequireTenantID(ctx)
+	if err != nil {
+		return err
+	}
+	delete(update, "tenant_id") // 禁止改写分区键
+	result, err := r.coll.UpdateOne(ctx,
+		bson.M{"_id": id, "tenant_id": tenantID},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		return fmt.Errorf("update asset: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *AssetRepo) SoftDelete(ctx context.Context, id string) error {
+	return r.Update(ctx, id, bson.M{"is_deleted": true})
+}
+
+// EnsureIndexes 复合索引以 tenant_id 为前缀，每个租户的查询都能走索引
+func (r *AssetRepo) EnsureIndexes(ctx context.Context) error {
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "status", Value: 1}}},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		{
+			Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "name", Value: 1}},
+			Options: options.Index().SetUnique(true), // 租户内名称唯一
+		},
+	}
+	_, err := r.coll.Indexes().CreateMany(ctx, indexes)
+	return err
+}
+
+// ---------- PostgreSQL：共享表 + tenant_id 列 ----------
+
+type Order struct {
+	ID       int64
+	TenantID string
+	Status   string
+	Amount   int64
+}
+
+type OrderRepo struct {
+	db *sql.DB
+}
+
+func NewOrderRepo(db *sql.DB) *OrderRepo { return &OrderRepo{db: db} }
+
+func (r *OrderRepo) FindByID(ctx context.Context, id int64) (*Order, error) {
+	tenantID, err := RequireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	const q = `SELECT id, tenant_id, status, amount FROM orders WHERE id = $1 AND tenant_id = $2`
+	var o Order
+	err = r.db.QueryRowContext(ctx, q, id, tenantID).Scan(&o.ID, &o.TenantID, &o.Status, &o.Amount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find order: %w", err)
+	}
+	return &o, nil
+}
+
+func (r *OrderRepo) ListByStatus(ctx context.Context, status string) ([]Order, error) {
+	tenantID, err := RequireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	const q = `SELECT id, tenant_id, status, amount FROM orders
+	           WHERE tenant_id = $1 AND status = $2 ORDER BY id`
+	rows, err := r.db.QueryContext(ctx, q, tenantID, status)
+	if err != nil {
+		return nil, fmt.Errorf("list orders: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []Order
+	for rows.Next() {
+		var o Order
+		if err := rows.Scan(&o.ID, &o.TenantID, &o.Status, &o.Amount); err != nil {
+			return nil, fmt.Errorf("scan order: %w", err)
+		}
+		orders = append(orders, o)
+	}
+	return orders, rows.Err()
+}
+
+// DDL 参考：
+// CREATE TABLE orders (
+//     id        BIGSERIAL PRIMARY KEY,
+//     tenant_id TEXT NOT NULL,
+//     status    TEXT NOT NULL,
+//     amount    BIGINT NOT NULL
+// );
+// CREATE INDEX idx_orders_tenant_status ON orders (tenant_id, status);
+// 可选：ALTER TABLE orders ENABLE ROW LEVEL SECURITY 配合 current_setting('app.tenant_id') 做兜底
+```
+
+---
+
+## 租户感知缓存（cache.go）
+
+键含 tenant_id；空值标记防穿透；`math/rand/v2` 生成 TTL 抖动防雪崩；租户变更时 SCAN 级联清理。
+
+```go
+package tenant
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math/rand/v2"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+const nullValue = "__NULL__" // 空值标记
+
+// Cache 租户感知缓存：键含 tenant_id，空值缓存防穿透，随机 TTL 防雪崩
+type Cache struct {
+	client  redis.UniversalClient
+	baseTTL time.Duration
+	jitter  time.Duration
+}
+
+func NewCache(client redis.UniversalClient, baseTTL, jitter time.Duration) *Cache {
+	return &Cache{client: client, baseTTL: baseTTL, jitter: jitter}
+}
+
+// CacheKey 缓存键必须以 tenant_id 分段，防止跨租户读到别人的数据
+func CacheKey(tenantID, resourceType, resourceID string) string {
+	return fmt.Sprintf("tenant:%s:%s:%s", tenantID, resourceType, resourceID)
+}
+
+// Get 返回 (data, hit, err)。hit=true 且 data=nil 表示命中空值缓存
+func (c *Cache) Get(ctx context.Context, tenantID, resourceType, resourceID string) ([]byte, bool, error) {
+	key := CacheKey(tenantID, resourceType, resourceID)
+	data, err := c.client.Get(ctx, key).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("get cache %s: %w", key, err)
+	}
+	if string(data) == nullValue {
+		return nil, true, nil
+	}
+	return data, true, nil
+}
+
+// Set data=nil 时写入空值标记
+func (c *Cache) Set(ctx context.Context, tenantID, resourceType, resourceID string, data []byte) error {
+	key := CacheKey(tenantID, resourceType, resourceID)
+	var value any = data
+	if data == nil {
+		value = nullValue
+	}
+	if err := c.client.Set(ctx, key, value, c.randomTTL()).Err(); err != nil {
+		return fmt.Errorf("set cache %s: %w", key, err)
+	}
+	return nil
+}
+
+func (c *Cache) Delete(ctx context.Context, tenantID, resourceType, resourceID string) error {
+	return c.client.Del(ctx, CacheKey(tenantID, resourceType, resourceID)).Err()
+}
+
+// DeleteByTenant 租户注销或变更时用 SCAN 级联清理（不要用 KEYS）
+func (c *Cache) DeleteByTenant(ctx context.Context, tenantID string) error {
+	pattern := fmt.Sprintf("tenant:%s:*", tenantID)
+	var cursor uint64
+	for {
+		keys, next, err := c.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return fmt.Errorf("scan tenant keys: %w", err)
+		}
+		if len(keys) > 0 {
+			if err := c.client.Del(ctx, keys...).Err(); err != nil {
+				return fmt.Errorf("delete tenant keys: %w", err)
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			return nil
+		}
+	}
+}
+
+// randomTTL 在 [baseTTL - jitter, baseTTL + jitter) 内随机，避免同一批键同时过期
+func (c *Cache) randomTTL() time.Duration {
+	if c.jitter <= 0 {
+		return c.baseTTL
+	}
+	offset := rand.N(2*c.jitter) - c.jitter
+	return c.baseTTL + offset
+}
+
+// GetOrLoad Cache-Aside；loader 返回 (nil, nil) 表示资源不存在，写入空值缓存
+func GetOrLoad[T any](ctx context.Context, cache *Cache, resourceType, resourceID string, loader func(ctx context.Context) (*T, error)) (*T, error) {
+	tenantID, err := RequireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	data, hit, err := cache.Get(ctx, tenantID, resourceType, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	if hit {
+		if data == nil {
+			return nil, nil
+		}
+		var result T
+		if err := json.Unmarshal(data, &result); err != nil {
+			return nil, fmt.Errorf("unmarshal cache: %w", err)
+		}
+		return &result, nil
+	}
+
+	result, err := loader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		_ = cache.Set(ctx, tenantID, resourceType, resourceID, nil)
+		return nil, nil
+	}
+	if data, err := json.Marshal(result); err == nil {
+		_ = cache.Set(ctx, tenantID, resourceType, resourceID, data)
+	}
+	return result, nil
+}
+
+// 使用示例
+type Service struct {
+	cache *Cache
+	repo  *AssetRepo
+}
+
+func (s *Service) GetAsset(ctx context.Context, id string) (*Asset, error) {
+	return GetOrLoad(ctx, s.cache, "asset", id, func(ctx context.Context) (*Asset, error) {
+		asset, err := s.repo.FindByID(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil // 触发空值缓存
+		}
+		return asset, err
+	})
+}
+```
+
+---
+
+## 消息队列：Kafka 与 Pulsar（mq.go）
+
+Kafka 用 tenant_id 作 Key 保证租户内有序；Pulsar 用 Key + Properties。消费端从消息体恢复 ctx。
+
+```go
+package tenant
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/apache/pulsar-client-go/pulsar"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+)
+
+// Event 消息体自带 tenant_id，消费端据此恢复上下文
+type Event struct {
+	EventID   string          `json:"event_id"`
+	EventType string          `json:"event_type"`
+	TenantID  string          `json:"tenant_id"`
+	Timestamp time.Time       `json:"timestamp"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+}
+
+// ---------- Kafka ----------
+
+type KafkaProducer struct {
+	producer *kafka.Producer
+}
+
+// Send 以 tenant_id 作为 Key：同一租户落同一分区，租户内有序
+func (p *KafkaProducer) Send(ctx context.Context, topic string, event Event) error {
+	if event.TenantID == "" {
+		tenantID, err := RequireTenantID(ctx)
+		if err != nil {
+			return err
+		}
+		event.TenantID = tenantID
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshal event: %w", err)
+	}
+
+	delivery := make(chan kafka.Event, 1)
+	err = p.producer.Produce(&kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
+		Key:            []byte(event.TenantID),
+		Value:          data,
+		Headers:        []kafka.Header{{Key: "tenant_id", Value: []byte(event.TenantID)}},
+	}, delivery)
+	if err != nil {
+		return fmt.Errorf("produce: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case e := <-delivery:
+		m, ok := e.(*kafka.Message)
+		if !ok {
+			return fmt.Errorf("unexpected event %T", e)
+		}
+		if m.TopicPartition.Error != nil {
+			return fmt.Errorf("delivery: %w", m.TopicPartition.Error)
+		}
+		return nil
+	}
+}
+
+type KafkaConsumer struct {
+	consumer *kafka.Consumer
+	handler  func(ctx context.Context, event Event) error
+}
+
+// Run 轮询消费，为每条消息恢复租户上下文
+func (c *KafkaConsumer) Run(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		msg, err := c.consumer.ReadMessage(500 * time.Millisecond)
+		if err != nil {
+			var kerr kafka.Error
+			if errors.As(err, &kerr) && kerr.IsTimeout() {
+				continue
+			}
+			slog.Error("read message", slog.Any("error", err))
+			continue
+		}
+
+		var event Event
+		if err := json.Unmarshal(msg.Value, &event); err != nil {
+			slog.Warn("bad payload", slog.Any("error", err))
+			continue
+		}
+		if event.TenantID == "" {
+			event.TenantID = string(msg.Key)
+		}
+
+		msgCtx := WithTenantID(ctx, event.TenantID)
+		if err := c.handler(msgCtx, event); err != nil {
+			slog.Error("handle event", slog.String("tenant", event.TenantID), slog.Any("error", err))
+			continue // 重试或转 DLQ
+		}
+		if _, err := c.consumer.CommitMessage(msg); err != nil {
+			slog.Error("commit", slog.Any("error", err))
+		}
+	}
+}
+
+// ---------- Pulsar ----------
+
+type PulsarProducer struct {
+	producer pulsar.Producer
+}
+
+// Send Key 用于 KeyShared 订阅按租户分派；Properties 供消费端过滤
+func (p *PulsarProducer) Send(ctx context.Context, event Event) error {
+	if event.TenantID == "" {
+		tenantID, err := RequireTenantID(ctx)
+		if err != nil {
+			return err
+		}
+		event.TenantID = tenantID
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	_, err = p.producer.Send(ctx, &pulsar.ProducerMessage{
+		Payload: data,
+		Key:     event.TenantID,
+		Properties: map[string]string{
+			"tenant_id":  event.TenantID,
+			"event_type": event.EventType,
+		},
+	})
+	return err
+}
+
+type PulsarConsumer struct {
+	consumer pulsar.Consumer
+	handler  func(ctx context.Context, event Event) error
+}
+
+func (c *PulsarConsumer) Run(ctx context.Context) error {
+	for {
+		msg, err := c.consumer.Receive(ctx)
+		if err != nil {
+			return err // ctx 取消或连接关闭
+		}
+
+		var event Event
+		if err := json.Unmarshal(msg.Payload(), &event); err != nil {
+			c.consumer.Nack(msg)
+			continue
+		}
+		if event.TenantID == "" {
+			event.TenantID = msg.Properties()["tenant_id"]
+		}
+
+		msgCtx := WithTenantID(ctx, event.TenantID)
+		if err := c.handler(msgCtx, event); err != nil {
+			c.consumer.Nack(msg) // 触发重投或 DLQ
+			continue
+		}
+		if err := c.consumer.Ack(msg); err != nil {
+			slog.Error("ack", slog.Any("error", err))
+		}
+	}
+}
+```
+
+---
+
+## 租户生命周期（lifecycle.go）
+
+状态变更后缓存必须失效；事件发布失败落 outbox 重试；定时任务按租户扇出时为每个租户构造独立 ctx。
+
+```go
+package tenant
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 // 租户状态
 const (
-    StatusPending  = 0 // 创建中
-    StatusActive   = 1 // 正常
-    StatusSuspend  = 2 // 暂停
-    StatusDeleted  = 3 // 已删除
+	StatusPending = 0
+	StatusActive  = 1
+	StatusSuspend = 2
+	StatusDeleted = 3
 )
 
 // 事件类型
 const (
-    EventCreate  = "tenant.create"
-    EventUpdate  = "tenant.update"
-    EventSuspend = "tenant.suspend"
-    EventResume  = "tenant.resume"
-    EventDelete  = "tenant.delete"
+	EventCreate  = "tenant.create"
+	EventSuspend = "tenant.suspend"
+	EventResume  = "tenant.resume"
+	EventDelete  = "tenant.delete"
 )
 
-// TenantLifecycleEvent 租户生命周期事件
-type TenantLifecycleEvent struct {
-    EventID   string          `json:"event_id"`
-    EventType string          `json:"event_type"`
-    TenantID  string          `json:"tenant_id"`
-    Timestamp time.Time       `json:"timestamp"`
-    Payload   json.RawMessage `json:"payload"`
-    Version   string          `json:"version"`
+type Tenant struct {
+	ID     string
+	Name   string
+	Status int
 }
 
-// TenantService 租户生命周期管理服务
-type TenantService struct {
-    repo       TenantRepository
-    cache      *TenantCache
-    publisher  EventPublisher
-    eventStore EventStore
+type CreateTenantRequest struct {
+	Name string
 }
 
-// Create 创建租户
-func (s *TenantService) Create(ctx context.Context, req CreateTenantRequest) (*Tenant, error) {
-    tenant := &Tenant{
-        ID:     uuid.New().String(),
-        Name:   req.Name,
-        Status: StatusPending,
-    }
-
-    // 持久化
-    if err := s.repo.Insert(ctx, tenant); err != nil {
-        return nil, fmt.Errorf("insert tenant: %w", err)
-    }
-
-    // 发布事件
-    event := TenantLifecycleEvent{
-        EventID:   uuid.New().String(),
-        EventType: EventCreate,
-        TenantID:  tenant.ID,
-        Timestamp: time.Now(),
-        Version:   "1.0",
-    }
-
-    if err := s.publisher.Publish(ctx, "tenant-events", event); err != nil {
-        // 事件发布失败：记录到 event store 用于重试
-        _ = s.eventStore.Save(ctx, event)
-    }
-
-    return tenant, nil
+// 依赖以接口声明，便于替换与测试
+type Repository interface {
+	Insert(ctx context.Context, t *Tenant) error
+	UpdateStatus(ctx context.Context, tenantID string, status int) error
+	ListActive(ctx context.Context) ([]Tenant, error)
 }
 
-// HandleCreateResult 处理创建结果回调
-func (s *TenantService) HandleCreateResult(ctx context.Context, event TenantLifecycleEvent, success bool) error {
-    var newStatus int
-    if success {
-        newStatus = StatusActive
-    } else {
-        newStatus = StatusDeleted
-    }
-
-    // 事务更新
-    if err := s.repo.UpdateStatus(ctx, event.TenantID, newStatus); err != nil {
-        return fmt.Errorf("update status: %w", err)
-    }
-
-    // 清理缓存
-    if err := s.cache.DeleteByTenant(ctx, event.TenantID); err != nil {
-        return fmt.Errorf("delete cache: %w", err) // 非致命，记录日志
-    }
-
-    return nil
+type Publisher interface {
+	Publish(ctx context.Context, topic string, event Event) error
 }
 
-// Suspend 暂停租户
-func (s *TenantService) Suspend(ctx context.Context, tenantID string) error {
-    if err := s.repo.UpdateStatus(ctx, tenantID, StatusSuspend); err != nil {
-        return err
-    }
-
-    _ = s.cache.DeleteByTenant(ctx, tenantID)
-
-    return s.publisher.Publish(ctx, "tenant-events", TenantLifecycleEvent{
-        EventID:   uuid.New().String(),
-        EventType: EventSuspend,
-        TenantID:  tenantID,
-        Timestamp: time.Now(),
-    })
+type Outbox interface {
+	Save(ctx context.Context, topic string, event Event) error
 }
 
-// Delete 删除租户（软删除 + 级联清理）
-func (s *TenantService) Delete(ctx context.Context, tenantID string) error {
-    if err := s.repo.SoftDelete(ctx, tenantID); err != nil {
-        return err
-    }
-
-    // 级联清理缓存
-    _ = s.cache.DeleteByTenant(ctx, tenantID)
-
-    return s.publisher.Publish(ctx, "tenant-events", TenantLifecycleEvent{
-        EventID:   uuid.New().String(),
-        EventType: EventDelete,
-        TenantID:  tenantID,
-        Timestamp: time.Now(),
-    })
-}
-```
-
-### 租户发现与配置加载
-
-```go
-// TenantDiscovery 租户发现（从管理服务加载活跃租户列表）
-type TenantDiscovery struct {
-    client TenantManagementClient
+type LifecycleService struct {
+	repo   Repository
+	cache  *Cache
+	pub    Publisher
+	outbox Outbox
 }
 
-type TenantConfig struct {
-    TenantID     string
-    TenantName   string
-    ResourceID   string
-    Subscription []string // 订阅的产品模块
+func NewLifecycleService(repo Repository, cache *Cache, pub Publisher, outbox Outbox) *LifecycleService {
+	return &LifecycleService{repo: repo, cache: cache, pub: pub, outbox: outbox}
 }
 
-// Load 加载所有活跃租户配置
-func (d *TenantDiscovery) Load(ctx context.Context) ([]TenantConfig, error) {
-    tenants, err := d.client.ListActiveTenants(ctx)
-    if err != nil {
-        return nil, fmt.Errorf("list tenants: %w", err)
-    }
+func (s *LifecycleService) emit(ctx context.Context, eventType, tenantID string, payload any) {
+	event := Event{
+		EventID:   uuid.NewString(),
+		EventType: eventType,
+		TenantID:  tenantID,
+		Timestamp: time.Now(),
+	}
+	if payload != nil {
+		if data, err := json.Marshal(payload); err == nil {
+			event.Payload = data
+		}
+	}
+	if err := s.pub.Publish(ctx, "tenant-events", event); err != nil {
+		// 发布失败不阻塞主流程：落 outbox 由后台任务重试
+		slog.Warn("publish failed, saved to outbox", slog.String("event", eventType), slog.Any("error", err))
+		_ = s.outbox.Save(ctx, "tenant-events", event)
+	}
+}
 
-    var configs []TenantConfig
-    for _, t := range tenants {
-        if t.Status != StatusActive {
-            continue
-        }
-        configs = append(configs, TenantConfig{
-            TenantID:     t.TenantID,
-            TenantName:   t.TenantName,
-            ResourceID:   t.ResourceID,
-            Subscription: t.Subscription,
-        })
-    }
-    return configs, nil
+// Create 先持久化再发事件；下游（初始化配额、建索引）消费事件后回调 HandleProvisioned
+func (s *LifecycleService) Create(ctx context.Context, req CreateTenantRequest) (*Tenant, error) {
+	t := &Tenant{ID: uuid.NewString(), Name: req.Name, Status: StatusPending}
+	if err := s.repo.Insert(ctx, t); err != nil {
+		return nil, fmt.Errorf("insert tenant: %w", err)
+	}
+	s.emit(ctx, EventCreate, t.ID, req)
+	return t, nil
+}
+
+func (s *LifecycleService) HandleProvisioned(ctx context.Context, tenantID string, ok bool) error {
+	status := StatusActive
+	if !ok {
+		status = StatusDeleted
+	}
+	if err := s.repo.UpdateStatus(ctx, tenantID, status); err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
+	return s.cache.DeleteByTenant(ctx, tenantID)
+}
+
+func (s *LifecycleService) Suspend(ctx context.Context, tenantID string) error {
+	if err := s.repo.UpdateStatus(ctx, tenantID, StatusSuspend); err != nil {
+		return err
+	}
+	_ = s.cache.DeleteByTenant(ctx, tenantID) // 状态变更后缓存必须失效
+	s.emit(ctx, EventSuspend, tenantID, nil)
+	return nil
+}
+
+// Delete 软删除 + 级联清理缓存；数据物理删除由离线任务按 tenant_id 分批执行
+func (s *LifecycleService) Delete(ctx context.Context, tenantID string) error {
+	if err := s.repo.UpdateStatus(ctx, tenantID, StatusDeleted); err != nil {
+		return err
+	}
+	_ = s.cache.DeleteByTenant(ctx, tenantID)
+	s.emit(ctx, EventDelete, tenantID, nil)
+	return nil
+}
+
+// ---------- 租户发现 ----------
+
+// Registry 进程内缓存活跃租户，供定时任务按租户扇出
+type Registry struct {
+	repo Repository
+}
+
+func (r *Registry) Load(ctx context.Context) ([]Tenant, error) {
+	tenants, err := r.repo.ListActive(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list tenants: %w", err)
+	}
+	active := tenants[:0]
+	for _, t := range tenants {
+		if t.Status == StatusActive {
+			active = append(active, t)
+		}
+	}
+	return active, nil
+}
+
+// ForEachTenant 为每个租户构造独立 ctx 执行任务
+func (r *Registry) ForEachTenant(ctx context.Context, fn func(ctx context.Context, t Tenant) error) error {
+	tenants, err := r.Load(ctx)
+	if err != nil {
+		return err
+	}
+	for _, t := range tenants {
+		tctx := WithInfo(ctx, Info{TenantID: t.ID, TenantName: t.Name})
+		if err := fn(tctx, t); err != nil {
+			slog.Error("tenant job", slog.String("tenant", t.ID), slog.Any("error", err))
+		}
+	}
+	return nil
 }
 ```

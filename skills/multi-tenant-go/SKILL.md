@@ -1,82 +1,73 @@
 ---
 name: multi-tenant-go
 description: "Go 多租户模式专家 - 租户上下文传播(HTTP Header/gRPC Metadata)、Context 注入与提取、HTTP中间件/gRPC拦截器自动传播、数据隔离(共享数据库+租户分区键)、租户感知缓存(键隔离/空值防穿透/随机TTL防雪崩)、消息队列租户隔离(Kafka分区/Pulsar属性)、跨服务传播(HTTP InjectToRequest/gRPC InjectToOutgoingContext)、租户生命周期管理。适用：SaaS多租户系统、B2B平台、微服务租户隔离、多租户数据安全。不适用：单租户系统、租户无数据隔离需求的内部工具、纯前端多租户(应在BFF层处理)。触发词：multi-tenant, 多租户, tenant, 租户隔离, tenant isolation, tenant context, 租户上下文, SaaS, B2B, 数据隔离"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # Go 多租户模式专家
 
 使用 Go 实现多租户模式：$ARGUMENTS
 
+基线：go1.24.6。示例只依赖标准库与上游库（grpc v1.80.0、mongo-driver/v2 v2.8.2、go-redis/v9 v9.22.0、confluent-kafka-go/v2 v2.14.1、pulsar-client-go v0.20.0），租户上下文 helper 定义在本 skill 的 `package tenant` 中。完整可编译代码见 [references/examples.md](references/examples.md)。
+
 ---
 
-## 1. 租户上下文定义
+## 0. 隔离模型选择
 
-### Context Key 与基础操作
+| 模型 | 隔离 | 成本 | 适用 |
+|------|------|------|------|
+| 共享库 + 分区键（`tenant_id` 列） | 逻辑隔离 | 最低 | 大多数 SaaS，租户数多、单租户数据量小 |
+| 独立 schema / database | 中等 | 中 | 合规要求按租户备份恢复 |
+| 独立实例 | 物理隔离 | 最高 | 大客户、数据主权要求 |
+
+本 skill 以共享库 + 分区键为主线；其他模型只是把 `tenant_id` 从过滤条件变成连接选择。
+
+---
+
+## 1. 租户上下文
 
 ```go
-// 使用 typed key 防止冲突
-type contextKey string
+package tenant
 
-const (
-    keyTenantID   = contextKey("tenant_id")
-    keyTenantName = contextKey("tenant_name")
+type contextKey struct{ name string } // 私有类型，避免跨包冲突
+
+var (
+    keyTenantID   = contextKey{"tenant_id"}
+    keyTenantName = contextKey{"tenant_name"}
 )
 
-// TenantInfo 租户信息（请求级）
-type TenantInfo struct {
+type Info struct {
     TenantID   string
     TenantName string
 }
 
-func (t TenantInfo) IsEmpty() bool    { return t.TenantID == "" && t.TenantName == "" }
-func (t TenantInfo) Validate() error {
-    if t.TenantID == "" { return ErrEmptyTenantID }
-    if t.TenantName == "" { return ErrEmptyTenantName }
-    return nil
+func WithTenantID(ctx context.Context, tenantID string) context.Context {
+    return context.WithValue(ctx, keyTenantID, tenantID)
 }
 
-var (
-    ErrEmptyTenantID   = errors.New("empty tenant_id")
-    ErrEmptyTenantName = errors.New("empty tenant_name")
-)
-```
+func WithInfo(ctx context.Context, info Info) context.Context // 只注入非空字段
 
-### Context 注入与提取
-
-```go
-// 注入
-func WithTenantID(ctx context.Context, id string) context.Context {
-    return context.WithValue(ctx, keyTenantID, id)
-}
-func WithTenantInfo(ctx context.Context, info TenantInfo) context.Context {
-    if info.TenantID != "" { ctx = context.WithValue(ctx, keyTenantID, info.TenantID) }
-    if info.TenantName != "" { ctx = context.WithValue(ctx, keyTenantName, info.TenantName) }
-    return ctx
+func TenantID(ctx context.Context) string { // 零值安全
+    v, _ := ctx.Value(keyTenantID).(string)
+    return v
 }
 
-// 提取（零值安全）
-func TenantID(ctx context.Context) string {
-    if v, ok := ctx.Value(keyTenantID).(string); ok { return v }
-    return ""
-}
-
-// 强制提取（业务必需场景）
-func RequireTenantID(ctx context.Context) (string, error) {
+func RequireTenantID(ctx context.Context) (string, error) { // 关键路径：缺失即报错
     v := TenantID(ctx)
-    if v == "" { return "", ErrEmptyTenantID }
+    if v == "" {
+        return "", ErrMissingTenantID
+    }
     return v, nil
 }
 ```
 
-> 完整 Context 操作和 Identity 结构体见 [references/examples.md](references/examples.md#租户上下文定义)
+- `With*` 只返回 `context.Context`；ctx 为 nil 是编程错误，不做运行时兜底
+- 读路径用 `TenantID`（允许空），写路径和数据访问用 `RequireTenantID`
+
+> 完整实现见 [references/examples.md#租户上下文contextgo](references/examples.md#租户上下文contextgo)
 
 ---
 
-## 2. HTTP 中间件自动传播
-
-### 中间件（提取 Header -> 注入 Context）
+## 2. HTTP 传播
 
 ```go
 const (
@@ -84,310 +75,248 @@ const (
     HeaderTenantName = "X-Tenant-Name"
 )
 
-func ExtractFromHTTPHeader(h http.Header) TenantInfo {
-    return TenantInfo{
-        TenantID:   strings.TrimSpace(h.Get(HeaderTenantID)),
-        TenantName: strings.TrimSpace(h.Get(HeaderTenantName)),
-    }
-}
+type Requirement int
 
-// 中间件选项
-type MiddlewareOption func(*middlewareConfig)
-type middlewareConfig struct {
-    requireTenant   bool  // 要求 TenantID + TenantName
-    requireTenantID bool  // 仅要求 TenantID
-}
-func WithRequireTenant() MiddlewareOption { /* ... */ }
-func WithRequireTenantID() MiddlewareOption { /* ... */ }
+const (
+    Optional     Requirement = iota
+    NeedTenantID             // 只要求 tenant_id
+    NeedTenant               // 要求 tenant_id + tenant_name
+)
 
-func TenantMiddleware(opts ...MiddlewareOption) func(http.Handler) http.Handler {
-    cfg := &middlewareConfig{}
-    for _, opt := range opts { opt(cfg) }
+func HTTPMiddleware(req Requirement) func(http.Handler) http.Handler {
     return func(next http.Handler) http.Handler {
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            info := ExtractFromHTTPHeader(r.Header)
-            if cfg.requireTenant {
-                if err := info.Validate(); err != nil {
-                    http.Error(w, err.Error(), http.StatusBadRequest)
-                    return
-                }
+            info := ExtractFromHeader(r.Header)
+            if err := req.check(info); err != nil {
+                http.Error(w, err.Error(), http.StatusBadRequest)
+                return
             }
-            ctx := WithTenantInfo(r.Context(), info)
-            next.ServeHTTP(w, r.WithContext(ctx))
+            next.ServeHTTP(w, r.WithContext(WithInfo(r.Context(), info)))
         })
     }
 }
-```
 
-### 跨服务 HTTP 传播
-
-```go
-// 调用下游服务时，将租户信息注入请求
+// 调用下游：Set 覆盖同名 Header，避免上游残留值泄漏
 func InjectToRequest(ctx context.Context, req *http.Request) {
-    if req == nil || req.Header == nil { return }
-    if tid := TenantID(ctx); tid != "" { req.Header.Set(HeaderTenantID, tid) }
-    if tname := TenantName(ctx); tname != "" { req.Header.Set(HeaderTenantName, tname) }
+    if tid := TenantID(ctx); tid != "" {
+        req.Header.Set(HeaderTenantID, tid)
+    }
+    if tname := TenantName(ctx); tname != "" {
+        req.Header.Set(HeaderTenantName, tname)
+    }
 }
 ```
 
-> 完整 HTTP 中间件（含 trace 传播）见 [references/examples.md](references/examples.md#http-中间件)
+- 网关入口用 `NeedTenant`，内部服务用 `NeedTenantID`
+- 租户身份来自认证结果（JWT claim、API key 映射），不能只信任客户端 Header；网关校验后再向内部传播
+- `TenantTransport` 实现 `http.RoundTripper`，让 `http.Client` 自动注入
+
+> 完整实现见 [references/examples.md#http-中间件与跨服务传播httpgo](references/examples.md#http-中间件与跨服务传播httpgo)
 
 ---
 
-## 3. gRPC 拦截器自动传播
-
-### 服务端拦截器
+## 3. gRPC 传播
 
 ```go
-const (
-    MetaTenantID   = "x-tenant-id"   // gRPC metadata 使用小写
-    MetaTenantName = "x-tenant-name"
-)
+const MetaTenantID = "x-tenant-id" // metadata key 必须小写
 
-func ExtractFromMetadata(md metadata.MD) TenantInfo {
-    return TenantInfo{
-        TenantID:   getMetaValue(md, MetaTenantID),
-        TenantName: getMetaValue(md, MetaTenantName),
-    }
-}
-
-func GRPCUnaryServerInterceptor(opts ...GRPCInterceptorOption) grpc.UnaryServerInterceptor {
-    cfg := &grpcInterceptorConfig{}
-    for _, opt := range opts { opt(cfg) }
-    return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+func UnaryServerInterceptor(req Requirement) grpc.UnaryServerInterceptor {
+    return func(ctx context.Context, request any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
         md, _ := metadata.FromIncomingContext(ctx)
-        tenant := ExtractFromMetadata(md)
-        if cfg.requireTenantID && tenant.TenantID == "" {
-            return nil, status.Error(codes.InvalidArgument, "missing tenant_id")
+        info := ExtractFromMetadata(md)
+        if err := req.check(info); err != nil {
+            return nil, status.Error(codes.InvalidArgument, err.Error())
         }
-        ctx = WithTenantInfo(ctx, tenant)
-        return handler(ctx, req)
+        return handler(WithInfo(ctx, info), request)
     }
 }
-```
 
-### 客户端拦截器（跨服务传播）
-
-```go
 func InjectToOutgoingContext(ctx context.Context) context.Context {
     md, ok := metadata.FromOutgoingContext(ctx)
-    if !ok { md = metadata.MD{} } else { md = md.Copy() }
-    if tid := TenantID(ctx); tid != "" { md.Set(MetaTenantID, tid) }
-    if tname := TenantName(ctx); tname != "" { md.Set(MetaTenantName, tname) }
-    return metadata.NewOutgoingContext(ctx, md)
-}
-
-func GRPCUnaryClientInterceptor() grpc.UnaryClientInterceptor {
-    return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-        return invoker(InjectToOutgoingContext(ctx), method, req, reply, cc, opts...)
+    if !ok {
+        md = metadata.MD{}
+    } else {
+        md = md.Copy()
     }
+    if tid := TenantID(ctx); tid != "" {
+        md.Set(MetaTenantID, tid) // Set 覆盖，不用 Append
+    }
+    return metadata.NewOutgoingContext(ctx, md)
 }
 ```
 
-> 完整 gRPC 拦截器（含流式）见 [references/examples.md](references/examples.md#grpc-拦截器)
+- 流式 RPC 用 `wrappedServerStream` 覆盖 `Context()`
+- 客户端用 `grpc.NewClient(target, grpc.WithChainUnaryInterceptor(UnaryClientInterceptor()))`；`grpc.Dial` 已弃用
+
+> 完整实现（含流式）见 [references/examples.md#grpc-拦截器grpcgo](references/examples.md#grpc-拦截器grpcgo)
 
 ---
 
-## 4. 数据隔离模式
-
-### 共享数据库 + 租户分区键
+## 4. 数据隔离
 
 ```go
-// Repository 层：所有查询必须带 tenant_id
-type AssetRepo struct { db *mongo.Collection }
-
+// Repository：每个查询都从 ctx 取 tenant_id 并加入过滤条件
 func (r *AssetRepo) FindByID(ctx context.Context, id string) (*Asset, error) {
     tenantID, err := RequireTenantID(ctx)
-    if err != nil { return nil, err }
-    filter := bson.M{"_id": id, "tenant_id": tenantID}
-    var asset Asset
-    if err := r.db.FindOne(ctx, filter).Decode(&asset); err != nil {
-        return nil, fmt.Errorf("find asset: %w", err)
+    if err != nil {
+        return nil, err
     }
-    return &asset, nil
+    var asset Asset
+    err = r.coll.FindOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}).Decode(&asset)
+    if errors.Is(err, mongo.ErrNoDocuments) {
+        return nil, ErrNotFound // 跨租户访问与不存在同样返回 NotFound
+    }
+    return &asset, err
 }
 
-func (r *AssetRepo) List(ctx context.Context, opts ListOptions) ([]*Asset, error) {
-    tenantID, err := RequireTenantID(ctx)
-    if err != nil { return nil, err }
-    filter := bson.M{"tenant_id": tenantID, "is_deleted": false}
-    // ... 分页查询
-}
+// 写入：用 ctx 值覆盖请求体里的 tenant_id，禁止改写分区键
+asset.TenantID = tenantID
+delete(update, "tenant_id")
 ```
 
-### 索引策略
+索引以 `tenant_id` 为前缀，每个租户的查询都能命中：
 
 ```go
-// 复合索引：tenant_id 作为前缀（确保每个租户的查询都命中索引）
-indexes := []mongo.IndexModel{
-    {Keys: bson.D{{"tenant_id", 1}, {"status", 1}}},
-    {Keys: bson.D{{"tenant_id", 1}, {"created_at", -1}}},
-    {Keys: bson.D{{"tenant_id", 1}, {"_id", 1}}, Options: options.Index().SetUnique(true)},
-}
+{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "status", Value: 1}}},
+{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "created_at", Value: -1}}},
+{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "name", Value: 1}}, Options: options.Index().SetUnique(true)},
 ```
 
-> 完整数据隔离模式（含 SQL 示例）见 [references/examples.md](references/examples.md#数据隔离)
+SQL 同理：`WHERE tenant_id = $1 AND ...`，索引 `(tenant_id, ...)`。PostgreSQL 可用 Row Level Security 配合 `SET app.tenant_id` 做兜底。
+
+> MongoDB 与 PostgreSQL 完整实现见 [references/examples.md#数据隔离mongodb-与-postgresqlrepogo](references/examples.md#数据隔离mongodb-与-postgresqlrepogo)
 
 ---
 
 ## 5. 租户感知缓存
 
-### 缓存键隔离
-
 ```go
-// 缓存键包含 tenant_id，防止跨租户数据泄露
-func tenantCacheKey(tenantID, resourceType, resourceID string) string {
+func CacheKey(tenantID, resourceType, resourceID string) string {
     return fmt.Sprintf("tenant:%s:%s:%s", tenantID, resourceType, resourceID)
 }
-```
 
-### 缓存穿透防护 + 随机 TTL
-
-```go
-type TenantCache struct {
-    client redis.UniversalClient
-    baseTTL time.Duration  // 24h
-    jitter  time.Duration  // 1h
+type Cache struct {
+    client  redis.UniversalClient
+    baseTTL time.Duration // 24h
+    jitter  time.Duration // 1h
 }
 
-func (c *TenantCache) Get(ctx context.Context, tenantID, key string) ([]byte, bool, error) {
-    cacheKey := tenantCacheKey(tenantID, "info", key)
-    data, err := c.client.Get(ctx, cacheKey).Bytes()
-    if errors.Is(err, redis.Nil) { return nil, false, nil }
-    if err != nil { return nil, false, err }
-    if string(data) == "__NULL__" { return nil, true, nil }  // 空值缓存命中
-    return data, true, nil
-}
+// data=nil 写入空值标记 "__NULL__"，防穿透
+func (c *Cache) Set(ctx context.Context, tenantID, resourceType, resourceID string, data []byte) error
 
-func (c *TenantCache) Set(ctx context.Context, tenantID, key string, data []byte) error {
-    cacheKey := tenantCacheKey(tenantID, "info", key)
-    ttl := c.randomTTL()
-    if data == nil {
-        return c.client.Set(ctx, cacheKey, "__NULL__", ttl).Err()  // 缓存空值
-    }
-    return c.client.Set(ctx, cacheKey, data, ttl).Err()
-}
-
-// 随机 TTL 防止缓存雪崩
-func (c *TenantCache) randomTTL() time.Duration {
-    offset := time.Duration(rand.Int63n(int64(c.jitter)))
-    if rand.Intn(2) == 0 { return c.baseTTL - offset }
+// TTL 在 [baseTTL - jitter, baseTTL + jitter) 内随机，防雪崩
+func (c *Cache) randomTTL() time.Duration {
+    offset := rand.N(2*c.jitter) - c.jitter // math/rand/v2
     return c.baseTTL + offset
 }
+
+// 租户变更时按前缀 SCAN 清理（不用 KEYS）
+func (c *Cache) DeleteByTenant(ctx context.Context, tenantID string) error
+
+// Cache-Aside：tenant_id 从 ctx 取，loader 返回 (nil, nil) 写空值
+func GetOrLoad[T any](ctx context.Context, cache *Cache, resourceType, resourceID string,
+    loader func(ctx context.Context) (*T, error)) (*T, error)
 ```
 
-> 完整缓存实现见 [references/examples.md](references/examples.md#租户感知缓存)
+> 完整实现见 [references/examples.md#租户感知缓存cachego](references/examples.md#租户感知缓存cachego)
 
 ---
 
-## 6. 消息队列租户隔离
-
-### Kafka 分区策略
+## 6. 消息队列
 
 ```go
-// 使用 tenant_id 作为 partition key，保证同一租户的消息有序
-func (p *Producer) SendTenantEvent(ctx context.Context, topic string, event TenantEvent) error {
-    tenantID, err := RequireTenantID(ctx)
-    if err != nil { return err }
-    event.TenantID = tenantID
-    data, _ := json.Marshal(event)
-    return p.Produce(&kafka.Message{
-        TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
-        Key:   []byte(tenantID),  // 按 tenant_id 分区
-        Value: data,
-    }, nil)
-}
+// Kafka：tenant_id 作 Key，同一租户落同一分区，租户内有序
+err = p.producer.Produce(&kafka.Message{
+    TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
+    Key:            []byte(event.TenantID),
+    Value:          data,
+    Headers:        []kafka.Header{{Key: "tenant_id", Value: []byte(event.TenantID)}},
+}, delivery)
+
+// 消费端：从消息体恢复上下文，每条消息独立 ctx
+msgCtx := WithTenantID(ctx, event.TenantID)
+if err := c.handler(msgCtx, event); err != nil { /* 重试或 DLQ */ }
 ```
 
-### 消费端租户上下文恢复
+Pulsar：`ProducerMessage.Key` 供 KeyShared 订阅按租户分派，`Properties["tenant_id"]` 供消费端过滤。
 
-```go
-func (c *Consumer) handleMessage(msg *kafka.Message) error {
-    var event TenantEvent
-    if err := json.Unmarshal(msg.Value, &event); err != nil { return err }
-    ctx := WithTenantID(context.Background(), event.TenantID)
-    return c.handler(ctx, event)
-}
-```
+- 消息体必须自带 `tenant_id`，不能依赖消费端的进程级状态
+- 大租户打爆单分区时改用 `hash(tenant_id + entity_id)` 作 Key，牺牲租户级全序
 
-> 完整消息队列模式（含 Pulsar）见 [references/examples.md](references/examples.md#消息队列租户隔离)
+> Kafka 与 Pulsar 完整实现见 [references/examples.md#消息队列kafka-与-pulsarmqgo](references/examples.md#消息队列kafka-与-pulsarmqgo)
 
 ---
 
-## 7. 租户生命周期管理
-
-### 事件驱动模式
+## 7. 租户生命周期
 
 ```go
-type TenantEvent struct {
-    EventID   string    `json:"event_id"`
-    EventType string    `json:"event_type"`  // create, update, delete, suspend
-    TenantID  string    `json:"tenant_id"`
-    Timestamp time.Time `json:"timestamp"`
-    Payload   json.RawMessage `json:"payload"`
-}
+const (
+    StatusPending = 0
+    StatusActive  = 1
+    StatusSuspend = 2
+    StatusDeleted = 3
+)
 
-// 创建租户的完整事务流程
-func (s *TenantService) Create(ctx context.Context, req CreateTenantRequest) error {
-    tenant := &Tenant{ID: uuid.New().String(), Name: req.Name, Status: StatusPending}
-    if err := s.repo.Insert(ctx, tenant); err != nil { return err }
-    event := TenantEvent{
-        EventID: uuid.New().String(), EventType: "create",
-        TenantID: tenant.ID, Timestamp: time.Now(),
+func (s *LifecycleService) Create(ctx context.Context, req CreateTenantRequest) (*Tenant, error) {
+    t := &Tenant{ID: uuid.NewString(), Name: req.Name, Status: StatusPending}
+    if err := s.repo.Insert(ctx, t); err != nil {
+        return nil, fmt.Errorf("insert tenant: %w", err)
     }
-    if err := s.publisher.Publish(ctx, "tenant-events", event); err != nil {
-        // 事件发布失败不影响主流程，记录到 DB 用于重试
-        s.eventStore.Save(ctx, event)
-    }
-    return nil
+    s.emit(ctx, EventCreate, t.ID, req) // 发布失败落 outbox 重试
+    return t, nil
 }
 ```
 
-> 完整生命周期管理见 [references/examples.md](references/examples.md#租户生命周期管理)
+- 状态变更（暂停、删除）后立即 `DeleteByTenant` 清缓存
+- 删除只做软删除 + 事件；物理清理由离线任务按 `tenant_id` 分批执行
+- 定时任务按租户扇出时，`ForEachTenant` 为每个租户构造独立 ctx
+
+> 完整实现见 [references/examples.md#租户生命周期lifecyclego](references/examples.md#租户生命周期lifecyclego)
 
 ---
 
 ## 最佳实践
 
-### 上下文传播
-- 所有入口点（HTTP/gRPC/MQ Consumer）必须提取并注入租户信息
-- 使用中间件/拦截器自动化，避免业务代码遗漏
-- 跨服务调用时自动传播，使用 `InjectToRequest` / `InjectToOutgoingContext`
+### 传播
 
-### 数据隔离
-- Repository 层所有查询强制包含 `tenant_id` 过滤
-- 复合索引以 `tenant_id` 为前缀
-- 使用 `RequireTenantID()` 确保租户上下文存在
+- 所有入口（HTTP、gRPC、MQ 消费、定时任务）都必须注入租户上下文，用中间件、拦截器自动化
+- 跨服务调用用 `InjectToRequest` / `InjectToOutgoingContext`，禁止手写 Header
+- 注入用 Set 覆盖语义，避免 Append 累积多值造成 tenant leakage
 
-### 缓存安全
-- 缓存键必须包含 `tenant_id`，防止跨租户数据泄露
-- 空值缓存防穿透 + 随机 TTL 防雪崩
-- 租户删除/变更时级联清理缓存
+### 数据
 
-### 消息队列
-- 消息体携带 `tenant_id`，消费端恢复上下文
-- Kafka 使用 `tenant_id` 作为 partition key 保证租户内有序
+- Repository 是唯一的数据访问层，所有方法以 `RequireTenantID` 开头
+- 写入用 ctx 值覆盖请求体，更新禁止改写 `tenant_id`
+- 复合索引以 `tenant_id` 为前缀，唯一约束也要带 `tenant_id`
+
+### 缓存与消息
+
+- 缓存键第一段是 `tenant_id`；空值缓存 + TTL 抖动
+- 消息体自带 `tenant_id`，Key 按租户分区
 
 ### 安全
-- 防止 tenant leakage：使用 `md.Set()` 覆盖而非 `md.Append()`
-- gRPC metadata 使用小写 key（`x-tenant-id`），HTTP Header 使用标准格式（`X-Tenant-ID`）
-- nil 检查采用防御性编程
+
+- 租户身份来自认证，不信任未经网关校验的 Header
+- 日志、指标、trace 都带 `tenant_id` 标签，便于按租户排障与计量
+- 单租户配额（限流、连接数）按 `tenant_id` 维度设置，防止噪声邻居
 
 ---
 
 ## 检查清单
 
-- [ ] 所有入口点都有租户提取中间件/拦截器？
-- [ ] Repository 查询全部包含 tenant_id 过滤？
-- [ ] 缓存键包含 tenant_id？
-- [ ] 跨服务调用传播了租户信息？
-- [ ] 消息队列消息体包含 tenant_id？
-- [ ] 使用 RequireTenantID 确保关键路径有租户上下文？
-- [ ] 复合索引以 tenant_id 为前缀？
-- [ ] gRPC metadata 使用 Set 覆盖语义？
+- [ ] 所有入口点都有租户提取中间件或拦截器？
+- [ ] Repository 每个方法都以 `RequireTenantID` 开头，过滤条件含 `tenant_id`？
+- [ ] 写入用 ctx 覆盖 `tenant_id`，更新禁止改写？
+- [ ] 复合索引与唯一约束以 `tenant_id` 为前缀？
+- [ ] 缓存键含 `tenant_id`，有空值缓存和 TTL 抖动？
+- [ ] 跨服务调用自动传播，注入用 Set 语义？
+- [ ] 消息体含 `tenant_id`，消费端恢复 ctx？
+- [ ] 租户状态变更后清缓存、发事件？
 
 ---
 
 ## 参考资料
 
-- [references/examples.md](references/examples.md) - 完整代码实现（上下文、中间件、拦截器、数据隔离、缓存、消息队列）
+- [references/examples.md](references/examples.md) - 完整可编译代码（上下文、HTTP、gRPC、数据隔离、缓存、消息队列、生命周期）
+- [grpc-go metadata](https://pkg.go.dev/google.golang.org/grpc/metadata)
+- [PostgreSQL Row Security Policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)

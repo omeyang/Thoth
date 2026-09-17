@@ -35,7 +35,7 @@ diff:
   auto_stash_unstaged: false
 
 verify:
-  cmd: "make test"                     # XKit 用 "task pre-push"；改成你项目的验证命令
+  cmd: "make test"                     # 改成你项目的验证命令，如 "task pre-push"
   timeout_seconds: 600
 
 commit:

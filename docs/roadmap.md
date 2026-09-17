@@ -1,42 +1,40 @@
 # 路线图
 
-## 第一阶段：基础建设（已完成）
+## 已完成
 
-- [x] 建立目录契约和命名规范
-- [x] 技能包迁移到 `skills/`
-- [x] 架构文档和贡献指南
+### 基础建设与运行时（2026-04）
 
-## 第二阶段：运行时（已完成）
+- 目录契约、命名规范、架构文档
+- 23 个 Go 技能，Hook 脚本，MCP 模板，5 个子代理，CLAUDE.md 模板
 
-- [x] Hook 脚本（go-format, go-lint, go-test-async, block-dangerous, session-context, commit-lint）
-- [x] Hook 配置模板（完整版 + 最小版）
-- [x] MCP 服务器配置模板（K8s, MongoDB, ClickHouse, Redis, Kafka, OTel, GitHub）
-- [x] Agent 定义（golang-pro, code-reviewer, k8s-devops, db-specialist, security-auditor）
-- [x] 工作流定义（TDD, Code Review, Deploy）
-- [x] Prompt 模板（CLAUDE.md 模板, 任务提示词, 代码片段）
+### 审查与验收工作流（2026-05 至 2026-09）
 
-## 第三阶段：审查与验收工作流（已完成）
+- `cr` 技能（local / pr / teams）
+- `adversarial-review`：四路对抗 + 交叉合议，pre-commit 增量审查，bats 全覆盖
+- `design-review`：设计文档多轮对抗审查，每晚 cron 批处理
+- `reqloop` / `reqloop-lite` 需求自验收闭环
+- 仓库更名 Thoth，工程标准统一引用 Maat；profile / adapter 抽离为插件目录
 
-- [x] `cr` 代码审查技能（local / pr / teams 三种模式）
-- [x] `go-performance`、`go-runtime` 技能（Go 1.25.9+ 基线）
-- [x] `diagram-png-export` 跨项目图表 PNG 导出技能
-- [x] `adversarial-review`：四路对抗 + 交叉合议，pre-commit 增量审查
-- [x] `design-review`：设计文档多轮对抗审查，含每晚 cron 批处理
-- [x] `reqloop` 需求自验收闭环与 `reqloop-lite` 轻量版
-- [x] reqloop 零依赖安装器（claude-code / codex / costrict / costrict-cli）
-- [x] 仓库更名为 Thoth，工程标准统一引用 Maat
-- [x] 项目预设（design-review profile）与企业适配器（reqloop adapter）抽离为插件目录，仓库开源
+### 现代化改造（2026-09-17）
 
-## 第四阶段：可靠性
+- 分发方式改为插件：仓库根即 Claude Code 插件与市场，另附 Codex 插件清单；删除软链接安装与 installer
+- Go 基线固定 go1.24.6，全部技能与库版本按该工具链核实钉住
+- 技能示例与 XKit 解耦，只用上游库
+- 子代理改为原生 `agents/<name>.md` 格式并预载技能
+- 插件级 `hooks.json`，新增 `protect-secrets`
+- MCP 模板换用 GitHub、Redis、MongoDB 官方服务器
+- `tdd` / `deploy` 由文档改为技能；`code-review` 并入 `cr`
+- `scripts/validate.sh`、`gen-catalog.sh`、`sync-wiki.sh` 与 GitHub Actions CI
+- `evals/` 技能触发用例
+- GitHub Wiki 由仓库文档生成
 
-- [ ] 添加评估套件和回归检查
-- [ ] 添加 CI 结构和文档验证
-- [ ] Hook 脚本单元测试
-- [ ] 端到端示例项目
+## 进行中
 
-## 第五阶段：扩展
+- 为每个技能补齐 `claude plugin eval` 的行为类用例（目前只有触发类）
+- Codex 子代理定义（等 Codex 插件 `agents/` 格式稳定）
 
-- [ ] Policies 模块（安全策略、权限边界）
-- [ ] Integrations 模块（GitHub Actions、Slack 通知）
-- [ ] 更多技能包（前端、DevOps、SRE）
-- [ ] 多语言支持（Python、Rust）
+## 候选
+
+- `design-review` / `adversarial-review` 的 Claude 侧改用 `--json-schema` 结构化输出，去掉 YAML 围栏剥离
+- 端到端示例项目
+- 更多中间件技能（PostgreSQL / pgx、NATS）

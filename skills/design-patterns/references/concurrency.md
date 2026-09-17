@@ -1,5 +1,7 @@
 # Go 并发模式 - 完整代码实现
 
+基线：go1.24.6；`golang.org/x/sync v0.19.0`。
+
 ## 目录
 
 - [Pipeline 模式](#pipeline-模式)
@@ -61,7 +63,7 @@ result := filter(
 ```go
 func fanOut[T any](in <-chan T, workers int, process func(T) T) []<-chan T {
     outs := make([]<-chan T, workers)
-    for i := 0; i < workers; i++ {
+    for i := range workers {
         outs[i] = func() <-chan T {
             out := make(chan T)
             go func() {
@@ -82,12 +84,12 @@ func fanIn[T any](channels ...<-chan T) <-chan T {
 
     wg.Add(len(channels))
     for _, ch := range channels {
-        go func(c <-chan T) {
+        go func() {
             defer wg.Done()
-            for v := range c {
+            for v := range ch {
                 out <- v
             }
-        }(ch)
+        }()
     }
 
     go func() {
@@ -121,7 +123,7 @@ func NewWorkerPool[T any, R any](workers int, process func(T) R) *WorkerPool[T, 
 }
 
 func (p *WorkerPool[T, R]) Start(ctx context.Context) {
-    for i := 0; i < p.workers; i++ {
+    for range p.workers {
         go func() {
             for {
                 select {
@@ -155,7 +157,6 @@ func fetchAll(ctx context.Context, urls []string) ([]Response, error) {
     g.SetLimit(10) // 最多 10 个并发
 
     for i, url := range urls {
-        i, url := i, url
         g.Go(func() error {
             resp, err := fetch(ctx, url)
             if err != nil {

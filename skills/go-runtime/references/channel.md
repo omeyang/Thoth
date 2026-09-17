@@ -1,4 +1,4 @@
-# Channel 深度（Go 1.25.9+）
+# Channel 深度（基线 go1.24.6）
 
 聚焦 SKILL.md §5 的细节：全流程、select 内部、close 广播。
 

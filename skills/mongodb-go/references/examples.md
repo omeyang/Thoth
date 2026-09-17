@@ -2,728 +2,623 @@
 
 ## 目录
 
-- [包装器模式实现](#包装器模式实现)
-- [CRUD 操作实现](#crud-操作实现)
-- [查询操作符参考](#查询操作符参考)
-- [聚合管道示例](#聚合管道示例)
-- [索引管理实现](#索引管理实现)
-- [事务处理实现](#事务处理实现)
-- [分页查询实现](#分页查询实现)
-- [批量写入实现](#批量写入实现)
-- [Change Streams 实现](#change-streams-实现)
-- [最佳实践实现](#最佳实践实现)
+- [导入与依赖](#导入与依赖)
+- [连接](#连接)
+- [包装器](#包装器)
+- [CRUD](#crud)
+- [聚合](#聚合)
+- [索引](#索引)
+- [事务](#事务)
+- [分页](#分页)
+- [批量写入](#批量写入)
+- [Change Streams](#change-streams)
+- [Schema 与错误处理](#schema-与错误处理)
 
 ---
 
-## 包装器模式实现
+所有代码在 go1.24.6 + `go.mongodb.org/mongo-driver/v2 v2.8.2` 下通过 `go vet`。示例合并在一个包里，导入块只列一次。
 
-参考 xmongo 的设计：不包装所有 API，只提供增值功能。
+```text
+go get go.mongodb.org/mongo-driver/v2@v2.8.2
+```
+
+v2 相对 v1 的关键差异（示例均按 v2 写）：
+
+| v1 | v2 |
+|---|---|
+| `mongo.Connect(ctx, opts)` | `mongo.Connect(opts)`，连接在后台建立，用 `Ping` 验证 |
+| v1 的 `SessionContext` 类型 | 已移除，事务回调只接收 `context.Context` |
+| `primitive.ObjectID` | `bson.ObjectID`（`primitive` 包并入 `bson`） |
+| `options.Update()` | `options.UpdateOne()` / `options.UpdateMany()` 分离 |
+| `opts ...*options.FindOptions` | `opts ...options.Lister[options.FindOptions]` |
+| `IndexView.DropOne` 返回 `(bson.Raw, error)` | 只返回 `error` |
+
+---
+
+## 导入与依赖
+
+```go
+package mongodb
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+)
+```
+
+---
+
+## 连接
+
+```go
+func NewMongoClient(ctx context.Context, uri string) (*mongo.Client, error) {
+	opts := options.Client().
+		ApplyURI(uri).
+		SetMaxPoolSize(100).
+		SetMinPoolSize(10).
+		SetMaxConnIdleTime(30 * time.Minute).
+		SetServerSelectionTimeout(5 * time.Second).
+		SetConnectTimeout(10 * time.Second)
+
+	// v2：Connect 不再接收 ctx，连接在后台建立
+	client, err := mongo.Connect(opts)
+	if err != nil {
+		return nil, fmt.Errorf("connect mongo: %w", err)
+	}
+
+	if err := client.Ping(ctx, readpref.Primary()); err != nil {
+		_ = client.Disconnect(ctx)
+		return nil, fmt.Errorf("ping mongo: %w", err)
+	}
+	return client, nil
+}
+```
+
+---
+
+## 包装器
 
 ```go
 type MongoDB struct {
-    client *mongo.Client
-    db     *mongo.Database
+	client *mongo.Client
+	db     *mongo.Database
 }
 
 func New(client *mongo.Client, dbName string) *MongoDB {
-    return &MongoDB{
-        client: client,
-        db:     client.Database(dbName),
-    }
+	return &MongoDB{client: client, db: client.Database(dbName)}
 }
 
-// Client 暴露底层客户端，用于高级操作
-func (m *MongoDB) Client() *mongo.Client {
-    return m.client
-}
+// Client 暴露底层客户端，用于包装器未覆盖的操作
+func (m *MongoDB) Client() *mongo.Client { return m.client }
 
 // Collection 获取集合
-func (m *MongoDB) Collection(name string) *mongo.Collection {
-    return m.db.Collection(name)
-}
+func (m *MongoDB) Collection(name string) *mongo.Collection { return m.db.Collection(name) }
 
 // Health 健康检查
 func (m *MongoDB) Health(ctx context.Context) error {
-    return m.client.Ping(ctx, readpref.Primary())
+	return m.client.Ping(ctx, readpref.Primary())
 }
 
 // Close 关闭连接
-func (m *MongoDB) Close(ctx context.Context) error {
-    return m.client.Disconnect(ctx)
-}
+func (m *MongoDB) Close(ctx context.Context) error { return m.client.Disconnect(ctx) }
 ```
 
 ---
 
-## CRUD 操作实现
-
-### 插入
+## CRUD
 
 ```go
-import "go.mongodb.org/mongo-driver/v2/bson"
+var ErrNotFound = errors.New("document not found")
 
-// 插入单个文档
 func (m *MongoDB) InsertOne(ctx context.Context, coll string, doc any) (string, error) {
-    result, err := m.Collection(coll).InsertOne(ctx, doc)
-    if err != nil {
-        return "", fmt.Errorf("insert one: %w", err)
-    }
-    return result.InsertedID.(bson.ObjectID).Hex(), nil
+	result, err := m.Collection(coll).InsertOne(ctx, doc)
+	if err != nil {
+		return "", fmt.Errorf("insert one: %w", err)
+	}
+	id, ok := result.InsertedID.(bson.ObjectID)
+	if !ok {
+		return "", fmt.Errorf("unexpected inserted id type %T", result.InsertedID)
+	}
+	return id.Hex(), nil
 }
 
-// 批量插入
 func (m *MongoDB) InsertMany(ctx context.Context, coll string, docs []any) ([]string, error) {
-    result, err := m.Collection(coll).InsertMany(ctx, docs)
-    if err != nil {
-        return nil, fmt.Errorf("insert many: %w", err)
-    }
-
-    ids := make([]string, len(result.InsertedIDs))
-    for i, id := range result.InsertedIDs {
-        ids[i] = id.(bson.ObjectID).Hex()
-    }
-    return ids, nil
+	result, err := m.Collection(coll).InsertMany(ctx, docs)
+	if err != nil {
+		return nil, fmt.Errorf("insert many: %w", err)
+	}
+	ids := make([]string, 0, len(result.InsertedIDs))
+	for _, raw := range result.InsertedIDs {
+		if id, ok := raw.(bson.ObjectID); ok {
+			ids = append(ids, id.Hex())
+		}
+	}
+	return ids, nil
 }
-```
 
-### 查询
-
-```go
-// 查询单个
 func (m *MongoDB) FindOne(ctx context.Context, coll string, filter bson.M, result any) error {
-    err := m.Collection(coll).FindOne(ctx, filter).Decode(result)
-    if err == mongo.ErrNoDocuments {
-        return ErrNotFound
-    }
-    return err
+	err := m.Collection(coll).FindOne(ctx, filter).Decode(result)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return ErrNotFound
+	}
+	return err
 }
 
-// 查询多个
-func (m *MongoDB) Find(ctx context.Context, coll string, filter bson.M, results any, opts ...*options.FindOptions) error {
-    cursor, err := m.Collection(coll).Find(ctx, filter, opts...)
-    if err != nil {
-        return fmt.Errorf("find: %w", err)
-    }
-    defer cursor.Close(ctx)
-
-    return cursor.All(ctx, results)
+// Find 查询多个；opts 为 v2 的 options.Lister
+func (m *MongoDB) Find(ctx context.Context, coll string, filter bson.M, results any, opts ...options.Lister[options.FindOptions]) error {
+	cursor, err := m.Collection(coll).Find(ctx, filter, opts...)
+	if err != nil {
+		return fmt.Errorf("find: %w", err)
+	}
+	defer cursor.Close(ctx)
+	return cursor.All(ctx, results)
 }
 
-// 通过 ID 查询
 func (m *MongoDB) FindByID(ctx context.Context, coll string, id string, result any) error {
-    oid, err := bson.ObjectIDFromHex(id)
-    if err != nil {
-        return fmt.Errorf("invalid object id: %w", err)
-    }
-    return m.FindOne(ctx, coll, bson.M{"_id": oid}, result)
+	oid, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Errorf("invalid object id: %w", err)
+	}
+	return m.FindOne(ctx, coll, bson.M{"_id": oid}, result)
 }
-```
 
-### 更新
-
-```go
-// 更新单个
 func (m *MongoDB) UpdateOne(ctx context.Context, coll string, filter, update bson.M) (int64, error) {
-    result, err := m.Collection(coll).UpdateOne(ctx, filter, bson.M{"$set": update})
-    if err != nil {
-        return 0, fmt.Errorf("update one: %w", err)
-    }
-    return result.ModifiedCount, nil
+	result, err := m.Collection(coll).UpdateOne(ctx, filter, bson.M{"$set": update})
+	if err != nil {
+		return 0, fmt.Errorf("update one: %w", err)
+	}
+	return result.ModifiedCount, nil
 }
 
-// 更新多个
 func (m *MongoDB) UpdateMany(ctx context.Context, coll string, filter, update bson.M) (int64, error) {
-    result, err := m.Collection(coll).UpdateMany(ctx, filter, bson.M{"$set": update})
-    if err != nil {
-        return 0, fmt.Errorf("update many: %w", err)
-    }
-    return result.ModifiedCount, nil
+	result, err := m.Collection(coll).UpdateMany(ctx, filter, bson.M{"$set": update})
+	if err != nil {
+		return 0, fmt.Errorf("update many: %w", err)
+	}
+	return result.ModifiedCount, nil
 }
 
-// Upsert（不存在则插入）
+// Upsert 不存在则插入。v2 中 UpdateOne 与 UpdateMany 的选项类型已分离
 func (m *MongoDB) Upsert(ctx context.Context, coll string, filter, update bson.M) error {
-    opts := options.Update().SetUpsert(true)
-    _, err := m.Collection(coll).UpdateOne(ctx, filter, bson.M{"$set": update}, opts)
-    return err
+	opts := options.UpdateOne().SetUpsert(true)
+	_, err := m.Collection(coll).UpdateOne(ctx, filter, bson.M{"$set": update}, opts)
+	return err
 }
-```
 
-### 删除
-
-```go
-// 删除单个
 func (m *MongoDB) DeleteOne(ctx context.Context, coll string, filter bson.M) (int64, error) {
-    result, err := m.Collection(coll).DeleteOne(ctx, filter)
-    if err != nil {
-        return 0, fmt.Errorf("delete one: %w", err)
-    }
-    return result.DeletedCount, nil
+	result, err := m.Collection(coll).DeleteOne(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("delete one: %w", err)
+	}
+	return result.DeletedCount, nil
 }
 
-// 删除多个
 func (m *MongoDB) DeleteMany(ctx context.Context, coll string, filter bson.M) (int64, error) {
-    result, err := m.Collection(coll).DeleteMany(ctx, filter)
-    if err != nil {
-        return 0, fmt.Errorf("delete many: %w", err)
-    }
-    return result.DeletedCount, nil
+	result, err := m.Collection(coll).DeleteMany(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("delete many: %w", err)
+	}
+	return result.DeletedCount, nil
 }
 
-// 软删除（推荐）
+// SoftDelete 软删除（推荐）
 func (m *MongoDB) SoftDelete(ctx context.Context, coll string, filter bson.M) error {
-    update := bson.M{
-        "deleted_at": time.Now(),
-        "is_deleted": true,
-    }
-    _, err := m.UpdateOne(ctx, coll, filter, update)
-    return err
+	_, err := m.UpdateOne(ctx, coll, filter, bson.M{
+		"deleted_at": time.Now(),
+		"is_deleted": true,
+	})
+	return err
 }
 ```
 
 ---
 
-## 查询操作符参考
-
-### 比较操作符
-
-```go
-// 大于
-bson.M{"age": bson.M{"$gt": 18}}
-
-// 大于等于
-bson.M{"age": bson.M{"$gte": 18}}
-
-// 小于
-bson.M{"age": bson.M{"$lt": 65}}
-
-// 小于等于
-bson.M{"age": bson.M{"$lte": 65}}
-
-// 不等于
-bson.M{"status": bson.M{"$ne": "deleted"}}
-
-// 在数组中
-bson.M{"role": bson.M{"$in": []string{"admin", "moderator"}}}
-
-// 不在数组中
-bson.M{"status": bson.M{"$nin": []string{"deleted", "banned"}}}
-```
-
-### 逻辑操作符
-
-```go
-// AND
-bson.M{"$and": []bson.M{
-    {"age": bson.M{"$gte": 18}},
-    {"age": bson.M{"$lte": 65}},
-}}
-
-// OR
-bson.M{"$or": []bson.M{
-    {"role": "admin"},
-    {"role": "moderator"},
-}}
-
-// NOT
-bson.M{"age": bson.M{"$not": bson.M{"$lt": 18}}}
-```
-
-### 数组操作符
-
-```go
-// 数组包含元素
-bson.M{"tags": "golang"}
-
-// 数组包含所有元素
-bson.M{"tags": bson.M{"$all": []string{"golang", "mongodb"}}}
-
-// 数组大小
-bson.M{"tags": bson.M{"$size": 3}}
-
-// 数组元素匹配条件
-bson.M{"scores": bson.M{"$elemMatch": bson.M{"$gte": 80, "$lte": 100}}}
-```
-
-### 正则表达式
-
-```go
-// 模糊匹配
-bson.M{"name": bson.M{"$regex": "^john", "$options": "i"}}
-
-// 使用 Go 正则
-bson.M{"email": bson.Regex{Pattern: `gmail\.com$`, Options: "i"}}
-```
-
----
-
-## 聚合管道示例
-
-### 基本聚合
+## 聚合
 
 ```go
 func (m *MongoDB) Aggregate(ctx context.Context, coll string, pipeline mongo.Pipeline, results any) error {
-    cursor, err := m.Collection(coll).Aggregate(ctx, pipeline)
-    if err != nil {
-        return fmt.Errorf("aggregate: %w", err)
-    }
-    defer cursor.Close(ctx)
-
-    return cursor.All(ctx, results)
-}
-```
-
-### 常用聚合阶段
-
-```go
-// 统计示例：按角色分组统计用户
-pipeline := mongo.Pipeline{
-    // $match - 筛选
-    {{"$match", bson.D{{"status", "active"}}}},
-
-    // $group - 分组
-    {{"$group", bson.D{
-        {"_id", "$role"},
-        {"count", bson.D{{"$sum", 1}}},
-        {"avg_age", bson.D{{"$avg", "$age"}}},
-        {"users", bson.D{{"$push", "$name"}}},
-    }}},
-
-    // $sort - 排序
-    {{"$sort", bson.D{{"count", -1}}}},
-
-    // $limit - 限制
-    {{"$limit", 10}},
+	cursor, err := m.Collection(coll).Aggregate(ctx, pipeline)
+	if err != nil {
+		return fmt.Errorf("aggregate: %w", err)
+	}
+	defer cursor.Close(ctx)
+	return cursor.All(ctx, results)
 }
 
-var results []struct {
-    ID     string   `bson:"_id"`
-    Count  int      `bson:"count"`
-    AvgAge float64  `bson:"avg_age"`
-    Users  []string `bson:"users"`
+type RoleStat struct {
+	Role   string   `bson:"_id"`
+	Count  int      `bson:"count"`
+	AvgAge float64  `bson:"avg_age"`
+	Users  []string `bson:"users"`
 }
-err := m.Aggregate(ctx, "users", pipeline, &results)
-```
 
-### $lookup 关联查询
-
-```go
-// 关联查询：获取用户及其订单
-pipeline := mongo.Pipeline{
-    {{"$lookup", bson.D{
-        {"from", "orders"},
-        {"localField", "_id"},
-        {"foreignField", "user_id"},
-        {"as", "orders"},
-    }}},
-    {{"$unwind", bson.D{
-        {"path", "$orders"},
-        {"preserveNullAndEmptyArrays", true},
-    }}},
+func (m *MongoDB) RoleStats(ctx context.Context) ([]RoleStat, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{{Key: "status", Value: "active"}}}},
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: "$role"},
+			{Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}},
+			{Key: "avg_age", Value: bson.D{{Key: "$avg", Value: "$age"}}},
+			{Key: "users", Value: bson.D{{Key: "$push", Value: "$name"}}},
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "count", Value: -1}}}},
+		{{Key: "$limit", Value: 10}},
+	}
+	var results []RoleStat
+	if err := m.Aggregate(ctx, "users", pipeline, &results); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
-```
 
-### $project 投影
+// LookupPipeline 关联查询：用户及其订单
+var LookupPipeline = mongo.Pipeline{
+	{{Key: "$lookup", Value: bson.D{
+		{Key: "from", Value: "orders"},
+		{Key: "localField", Value: "_id"},
+		{Key: "foreignField", Value: "user_id"},
+		{Key: "as", Value: "orders"},
+	}}},
+	{{Key: "$unwind", Value: bson.D{
+		{Key: "path", Value: "$orders"},
+		{Key: "preserveNullAndEmptyArrays", Value: true},
+	}}},
+}
 
-```go
-// 只返回指定字段
-pipeline := mongo.Pipeline{
-    {{"$project", bson.D{
-        {"_id", 1},
-        {"name", 1},
-        {"email", 1},
-        {"full_name", bson.D{{"$concat", bson.A{"$first_name", " ", "$last_name"}}}},
-        {"age_group", bson.D{{"$cond", bson.A{
-            bson.D{{"$lt", bson.A{"$age", 18}}},
-            "minor",
-            "adult",
-        }}}},
-    }}},
+// ProjectPipeline 投影与计算字段
+var ProjectPipeline = mongo.Pipeline{
+	{{Key: "$project", Value: bson.D{
+		{Key: "_id", Value: 1},
+		{Key: "name", Value: 1},
+		{Key: "email", Value: 1},
+		{Key: "full_name", Value: bson.D{{Key: "$concat", Value: bson.A{"$first_name", " ", "$last_name"}}}},
+		{Key: "age_group", Value: bson.D{{Key: "$cond", Value: bson.A{
+			bson.D{{Key: "$lt", Value: bson.A{"$age", 18}}},
+			"minor",
+			"adult",
+		}}}},
+	}}},
 }
 ```
 
 ---
 
-## 索引管理实现
-
-### 创建索引
+## 索引
 
 ```go
-import "go.mongodb.org/mongo-driver/v2/mongo/options"
-
-func (m *MongoDB) CreateIndex(ctx context.Context, coll string, keys bson.D, opts *options.IndexOptions) (string, error) {
-    model := mongo.IndexModel{
-        Keys:    keys,
-        Options: opts,
-    }
-    return m.Collection(coll).Indexes().CreateOne(ctx, model)
+func (m *MongoDB) CreateIndex(ctx context.Context, coll string, keys bson.D, opts *options.IndexOptionsBuilder) (string, error) {
+	model := mongo.IndexModel{Keys: keys, Options: opts}
+	return m.Collection(coll).Indexes().CreateOne(ctx, model)
 }
 
-// 单字段索引
-m.CreateIndex(ctx, "users", bson.D{{"email", 1}}, options.Index().SetUnique(true))
-
-// 复合索引
-m.CreateIndex(ctx, "users", bson.D{{"status", 1}, {"created_at", -1}}, nil)
-
-// 文本索引
-m.CreateIndex(ctx, "articles", bson.D{{"title", "text"}, {"content", "text"}}, nil)
-
-// TTL 索引（自动过期）
-m.CreateIndex(ctx, "sessions", bson.D{{"expires_at", 1}},
-    options.Index().SetExpireAfterSeconds(0))
-
-// 部分索引
-m.CreateIndex(ctx, "users", bson.D{{"email", 1}},
-    options.Index().SetPartialFilterExpression(bson.M{"status": "active"}))
-```
-
-### 查看索引
-
-```go
 func (m *MongoDB) ListIndexes(ctx context.Context, coll string) ([]bson.M, error) {
-    cursor, err := m.Collection(coll).Indexes().List(ctx)
-    if err != nil {
-        return nil, err
-    }
-    defer cursor.Close(ctx)
-
-    var indexes []bson.M
-    return indexes, cursor.All(ctx, &indexes)
+	cursor, err := m.Collection(coll).Indexes().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var indexes []bson.M
+	if err := cursor.All(ctx, &indexes); err != nil {
+		return nil, err
+	}
+	return indexes, nil
 }
-```
 
-### 删除索引
-
-```go
+// DropIndex v2 的 DropOne 只返回 error
 func (m *MongoDB) DropIndex(ctx context.Context, coll, indexName string) error {
-    _, err := m.Collection(coll).Indexes().DropOne(ctx, indexName)
-    return err
+	return m.Collection(coll).Indexes().DropOne(ctx, indexName)
+}
+
+// EnsureIndexes 启动时确保索引存在（CreateOne 幂等）
+func (m *MongoDB) EnsureIndexes(ctx context.Context) error {
+	specs := []struct {
+		coll string
+		keys bson.D
+		opts *options.IndexOptionsBuilder
+	}{
+		{"users", bson.D{{Key: "email", Value: 1}}, options.Index().SetUnique(true)},
+		{"users", bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: -1}}, nil},
+		{"articles", bson.D{{Key: "title", Value: "text"}, {Key: "content", Value: "text"}}, nil},
+		{"sessions", bson.D{{Key: "expires_at", Value: 1}}, options.Index().SetExpireAfterSeconds(0)},
+		{"users", bson.D{{Key: "email", Value: 1}}, options.Index().
+			SetName("email_active").
+			SetPartialFilterExpression(bson.M{"status": "active"})},
+		{"orders", bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}, nil},
+	}
+	for _, s := range specs {
+		if _, err := m.CreateIndex(ctx, s.coll, s.keys, s.opts); err != nil {
+			return fmt.Errorf("ensure index on %s: %w", s.coll, err)
+		}
+	}
+	return nil
 }
 ```
 
 ---
 
-## 事务处理实现
+## 事务
 
-### 多文档事务
+事务需要副本集或分片集群。`WithTransaction` 内部处理 `TransientTransactionError` 重试，回调可能被多次执行，必须幂等。
 
 ```go
-func (m *MongoDB) WithTransaction(ctx context.Context, fn func(sc mongo.SessionContext) error) error {
-    session, err := m.client.StartSession()
-    if err != nil {
-        return fmt.Errorf("start session: %w", err)
-    }
-    defer session.EndSession(ctx)
+// WithTransaction v2：回调只接收 context.Context（SessionContext 已移除）
+func (m *MongoDB) WithTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	session, err := m.client.StartSession()
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	defer session.EndSession(ctx)
 
-    _, err = session.WithTransaction(ctx, func(sc mongo.SessionContext) (any, error) {
-        return nil, fn(sc)
-    })
-    return err
+	_, err = session.WithTransaction(ctx, func(ctx context.Context) (any, error) {
+		return nil, fn(ctx)
+	})
+	return err
 }
 
-// 使用示例：转账操作
-err := m.WithTransaction(ctx, func(sc mongo.SessionContext) error {
-    // 扣款
-    _, err := m.Collection("accounts").UpdateOne(sc,
-        bson.M{"_id": fromID},
-        bson.M{"$inc": bson.M{"balance": -amount}},
-    )
-    if err != nil {
-        return err
-    }
-
-    // 入账
-    _, err = m.Collection("accounts").UpdateOne(sc,
-        bson.M{"_id": toID},
-        bson.M{"$inc": bson.M{"balance": amount}},
-    )
-    if err != nil {
-        return err
-    }
-
-    // 记录交易
-    _, err = m.Collection("transactions").InsertOne(sc, bson.M{
-        "from":   fromID,
-        "to":     toID,
-        "amount": amount,
-        "time":   time.Now(),
-    })
-    return err
-})
+// Transfer 转账：两笔更新与一条流水在同一事务
+func (m *MongoDB) Transfer(ctx context.Context, fromID, toID bson.ObjectID, amount int64) error {
+	return m.WithTransaction(ctx, func(ctx context.Context) error {
+		accounts := m.Collection("accounts")
+		if _, err := accounts.UpdateOne(ctx,
+			bson.M{"_id": fromID, "balance": bson.M{"$gte": amount}},
+			bson.M{"$inc": bson.M{"balance": -amount}},
+		); err != nil {
+			return err
+		}
+		if _, err := accounts.UpdateOne(ctx,
+			bson.M{"_id": toID},
+			bson.M{"$inc": bson.M{"balance": amount}},
+		); err != nil {
+			return err
+		}
+		_, err := m.Collection("transactions").InsertOne(ctx, bson.M{
+			"from": fromID, "to": toID, "amount": amount, "time": time.Now(),
+		})
+		return err
+	})
+}
 ```
 
 ---
 
-## 分页查询实现
+## 分页
 
-### Offset 分页
+Go 方法不能带类型参数，`FindPage` / `FindAfter` 写成普通泛型函数，接收 `*mongo.Collection`。
 
 ```go
 type PageOptions struct {
-    Page     int64
-    PageSize int64
-    Sort     bson.D
+	Page     int64 // 从 1 开始
+	PageSize int64
+	Sort     bson.D // 如 bson.D{{Key: "created_at", Value: -1}}
 }
 
 type PageResult[T any] struct {
-    Data       []T
-    Total      int64
-    Page       int64
-    PageSize   int64
-    TotalPages int64
+	Data       []T
+	Total      int64
+	Page       int64
+	PageSize   int64
+	TotalPages int64
 }
 
-func (m *MongoDB) FindPage[T any](ctx context.Context, coll string, filter bson.M, opts PageOptions) (*PageResult[T], error) {
-    collection := m.Collection(coll)
+// FindPage Offset 分页。Go 方法不能带类型参数，因此写成普通泛型函数
+func FindPage[T any](ctx context.Context, coll *mongo.Collection, filter bson.M, opts PageOptions) (*PageResult[T], error) {
+	if opts.Page < 1 {
+		opts.Page = 1
+	}
+	if opts.PageSize <= 0 {
+		opts.PageSize = 20
+	}
 
-    // 计算 total（注意：非原子操作）
-    total, err := collection.CountDocuments(ctx, filter)
-    if err != nil {
-        return nil, fmt.Errorf("count: %w", err)
-    }
+	// COUNT 与 Find 是两次独立查询，非原子
+	total, err := coll.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("count: %w", err)
+	}
 
-    // 查询数据
-    skip := (opts.Page - 1) * opts.PageSize
-    findOpts := options.Find().
-        SetSkip(skip).
-        SetLimit(opts.PageSize).
-        SetSort(opts.Sort)
+	findOpts := options.Find().
+		SetSkip((opts.Page - 1) * opts.PageSize).
+		SetLimit(opts.PageSize)
+	if len(opts.Sort) > 0 {
+		findOpts.SetSort(opts.Sort)
+	}
 
-    var data []T
-    cursor, err := collection.Find(ctx, filter, findOpts)
-    if err != nil {
-        return nil, fmt.Errorf("find: %w", err)
-    }
-    defer cursor.Close(ctx)
+	cursor, err := coll.Find(ctx, filter, findOpts)
+	if err != nil {
+		return nil, fmt.Errorf("find: %w", err)
+	}
+	defer cursor.Close(ctx)
 
-    if err := cursor.All(ctx, &data); err != nil {
-        return nil, fmt.Errorf("decode: %w", err)
-    }
+	var data []T
+	if err := cursor.All(ctx, &data); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
 
-    totalPages := (total + opts.PageSize - 1) / opts.PageSize
-
-    return &PageResult[T]{
-        Data:       data,
-        Total:      total,
-        Page:       opts.Page,
-        PageSize:   opts.PageSize,
-        TotalPages: totalPages,
-    }, nil
+	return &PageResult[T]{
+		Data:       data,
+		Total:      total,
+		Page:       opts.Page,
+		PageSize:   opts.PageSize,
+		TotalPages: (total + opts.PageSize - 1) / opts.PageSize,
+	}, nil
 }
-```
 
-### 游标分页（推荐大数据量）
+// FindAfter 基于 _id 的游标分页，避免 COUNT 与 SKIP 开销
+func FindAfter[T any](ctx context.Context, coll *mongo.Collection, filter bson.M, afterID string, limit int64) ([]T, error) {
+	f := make(bson.M, len(filter)+1)
+	for k, v := range filter {
+		f[k] = v
+	}
+	if afterID != "" {
+		oid, err := bson.ObjectIDFromHex(afterID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cursor: %w", err)
+		}
+		f["_id"] = bson.M{"$gt": oid}
+	}
 
-```go
-// 基于 _id 的游标分页，避免 COUNT 开销
-func (m *MongoDB) FindAfter[T any](ctx context.Context, coll string, filter bson.M, afterID string, limit int64) ([]T, error) {
-    // 复制 filter，避免修改调用方的 map
-    f := make(bson.M, len(filter)+1)
-    for k, v := range filter {
-        f[k] = v
-    }
+	opts := options.Find().SetLimit(limit).SetSort(bson.D{{Key: "_id", Value: 1}})
+	cursor, err := coll.Find(ctx, f, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
 
-    if afterID != "" {
-        oid, err := bson.ObjectIDFromHex(afterID)
-        if err != nil {
-            return nil, err
-        }
-        f["_id"] = bson.M{"$gt": oid}
-    }
-    filter = f
-
-    opts := options.Find().
-        SetLimit(limit).
-        SetSort(bson.D{{"_id", 1}})
-
-    var data []T
-    cursor, err := m.Collection(coll).Find(ctx, filter, opts)
-    if err != nil {
-        return nil, err
-    }
-    defer cursor.Close(ctx)
-
-    return data, cursor.All(ctx, &data)
+	var data []T
+	if err := cursor.All(ctx, &data); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 ```
 
 ---
 
-## 批量写入实现
+## 批量写入
+
+`Ordered=false` 时一批内的失败不影响其余文档；`BulkWriteResult` 仍会返回成功计数。
 
 ```go
 type BulkOptions struct {
-    BatchSize int
-    Ordered   bool
+	BatchSize int  // 每批大小，默认 1000
+	Ordered   bool // 有序：出错即停；无序：继续其余写入
 }
 
-func (m *MongoDB) BulkWrite(ctx context.Context, coll string, docs []any, opts BulkOptions) error {
-    if opts.BatchSize <= 0 {
-        opts.BatchSize = 1000
-    }
+type BulkResult struct {
+	InsertedCount int64
+	Errors        []error
+}
 
-    collection := m.Collection(coll)
-    writeOpts := options.BulkWrite().SetOrdered(opts.Ordered)
+func (m *MongoDB) BulkInsert(ctx context.Context, coll string, docs []any, opts BulkOptions) (*BulkResult, error) {
+	if opts.BatchSize <= 0 {
+		opts.BatchSize = 1000
+	}
+	collection := m.Collection(coll)
+	writeOpts := options.BulkWrite().SetOrdered(opts.Ordered)
+	res := &BulkResult{}
 
-    for i := 0; i < len(docs); i += opts.BatchSize {
-        end := i + opts.BatchSize
-        if end > len(docs) {
-            end = len(docs)
-        }
+	for start := 0; start < len(docs); start += opts.BatchSize {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		end := min(start+opts.BatchSize, len(docs))
+		batch := docs[start:end]
 
-        batch := docs[i:end]
-        models := make([]mongo.WriteModel, len(batch))
-        for j, doc := range batch {
-            models[j] = mongo.NewInsertOneModel().SetDocument(doc)
-        }
+		models := make([]mongo.WriteModel, len(batch))
+		for i, doc := range batch {
+			models[i] = mongo.NewInsertOneModel().SetDocument(doc)
+		}
 
-        _, err := collection.BulkWrite(ctx, models, writeOpts)
-        if err != nil {
-            return fmt.Errorf("bulk write batch %d: %w", i/opts.BatchSize, err)
-        }
-
-        // 检查 context 取消
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        default:
-        }
-    }
-
-    return nil
+		r, err := collection.BulkWrite(ctx, models, writeOpts)
+		if r != nil {
+			res.InsertedCount += r.InsertedCount
+		}
+		if err != nil {
+			res.Errors = append(res.Errors, fmt.Errorf("batch %d: %w", start/opts.BatchSize, err))
+			if opts.Ordered {
+				return res, err
+			}
+		}
+	}
+	if len(res.Errors) > 0 {
+		return res, errors.Join(res.Errors...)
+	}
+	return res, nil
 }
 ```
 
 ---
 
-## Change Streams 实现
+## Change Streams
 
 ```go
 func (m *MongoDB) Watch(ctx context.Context, coll string, pipeline mongo.Pipeline, handler func(bson.M)) error {
-    opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
+	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
 
-    stream, err := m.Collection(coll).Watch(ctx, pipeline, opts)
-    if err != nil {
-        return fmt.Errorf("watch: %w", err)
-    }
-    defer stream.Close(ctx)
+	stream, err := m.Collection(coll).Watch(ctx, pipeline, opts)
+	if err != nil {
+		return fmt.Errorf("watch: %w", err)
+	}
+	defer stream.Close(ctx)
 
-    for stream.Next(ctx) {
-        var event bson.M
-        if err := stream.Decode(&event); err != nil {
-            continue
-        }
-        handler(event)
-    }
-
-    return stream.Err()
+	for stream.Next(ctx) {
+		var event bson.M
+		if err := stream.Decode(&event); err != nil {
+			slog.Warn("decode change event", slog.Any("error", err))
+			continue
+		}
+		handler(event)
+	}
+	return stream.Err()
 }
 
-// 使用示例：监听用户变更
-pipeline := mongo.Pipeline{
-    {{"$match", bson.D{
-        {"operationType", bson.D{{"$in", bson.A{"insert", "update", "delete"}}}},
-    }}},
+func WatchUsers(ctx context.Context, m *MongoDB) error {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{
+			{Key: "operationType", Value: bson.D{{Key: "$in", Value: bson.A{"insert", "update", "delete"}}}},
+		}}},
+	}
+	return m.Watch(ctx, "users", pipeline, func(event bson.M) {
+		slog.Info("user change", slog.Any("op", event["operationType"]))
+	})
 }
-
-go m.Watch(ctx, "users", pipeline, func(event bson.M) {
-    log.Printf("User change: %v", event["operationType"])
-})
 ```
 
 ---
 
-## 最佳实践实现
-
-### Schema 设计
+## Schema 与错误处理
 
 ```go
-// 使用结构体定义 schema
 type User struct {
-    ID        bson.ObjectID `bson:"_id,omitempty"`
-    Name      string        `bson:"name"`
-    Email     string        `bson:"email"`
-    Age       int           `bson:"age,omitempty"`
-    Role      string        `bson:"role"`
-    Tags      []string      `bson:"tags,omitempty"`
-    Profile   *Profile      `bson:"profile,omitempty"` // 嵌入文档
-    CreatedAt time.Time     `bson:"created_at"`
-    UpdatedAt time.Time     `bson:"updated_at"`
-    DeletedAt *time.Time    `bson:"deleted_at,omitempty"` // 软删除
+	ID        bson.ObjectID `bson:"_id,omitempty"`
+	Name      string        `bson:"name"`
+	Email     string        `bson:"email"`
+	Age       int           `bson:"age,omitempty"`
+	Role      string        `bson:"role"`
+	Tags      []string      `bson:"tags,omitempty"`
+	Profile   *Profile      `bson:"profile,omitempty"` // 嵌入文档
+	CreatedAt time.Time     `bson:"created_at"`
+	UpdatedAt time.Time     `bson:"updated_at"`
+	DeletedAt *time.Time    `bson:"deleted_at,omitempty"` // 软删除
 }
 
 type Profile struct {
-    Avatar string `bson:"avatar,omitempty"`
-    Bio    string `bson:"bio,omitempty"`
+	Avatar string `bson:"avatar,omitempty"`
+	Bio    string `bson:"bio,omitempty"`
 }
-```
 
-### 连接池配置
+var ErrDuplicate = errors.New("duplicate key")
 
-```go
-opts := options.Client().
-    ApplyURI(uri).
-    SetMaxPoolSize(100).        // 最大连接数
-    SetMinPoolSize(10).         // 最小连接数
-    SetMaxConnIdleTime(30*time.Minute). // 空闲连接超时
-    SetServerSelectionTimeout(5*time.Second). // 服务器选择超时
-    SetConnectTimeout(10*time.Second) // 连接超时
-```
-
-### 错误处理
-
-```go
-import "go.mongodb.org/mongo-driver/v2/mongo"
-
-var ErrNotFound = errors.New("document not found")
-
-func handleMongoError(err error) error {
-    if err == nil {
-        return nil
-    }
-
-    if err == mongo.ErrNoDocuments {
-        return ErrNotFound
-    }
-
-    // 检查重复键错误
-    if mongo.IsDuplicateKeyError(err) {
-        return fmt.Errorf("duplicate key: %w", err)
-    }
-
-    // 检查超时
-    if mongo.IsTimeout(err) {
-        return fmt.Errorf("timeout: %w", err)
-    }
-
-    return err
+func HandleMongoError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, mongo.ErrNoDocuments):
+		return ErrNotFound
+	case mongo.IsDuplicateKeyError(err):
+		return fmt.Errorf("%w: %w", ErrDuplicate, err)
+	case mongo.IsTimeout(err):
+		return fmt.Errorf("timeout: %w", err)
+	default:
+		return err
+	}
 }
-```
 
-### 索引策略
-
-```go
-// 启动时确保索引存在
-func (m *MongoDB) EnsureIndexes(ctx context.Context) error {
-    // 用户集合
-    if _, err := m.CreateIndex(ctx, "users",
-        bson.D{{"email", 1}},
-        options.Index().SetUnique(true)); err != nil {
-        return err
-    }
-
-    if _, err := m.CreateIndex(ctx, "users",
-        bson.D{{"status", 1}, {"created_at", -1}},
-        nil); err != nil {
-        return err
-    }
-
-    // 订单集合
-    if _, err := m.CreateIndex(ctx, "orders",
-        bson.D{{"user_id", 1}, {"created_at", -1}},
-        nil); err != nil {
-        return err
-    }
-
-    return nil
-}
+// 查询操作符示例（编译期校验）
+var (
+	_ = bson.M{"age": bson.M{"$gt": 18}}
+	_ = bson.M{"role": bson.M{"$in": []string{"admin", "moderator"}}}
+	_ = bson.M{"$and": []bson.M{{"age": bson.M{"$gte": 18}}, {"age": bson.M{"$lte": 65}}}}
+	_ = bson.M{"tags": bson.M{"$all": []string{"golang", "mongodb"}}}
+	_ = bson.M{"scores": bson.M{"$elemMatch": bson.M{"$gte": 80, "$lte": 100}}}
+	_ = bson.M{"name": bson.M{"$regex": "^john", "$options": "i"}}
+	_ = bson.M{"email": bson.Regex{Pattern: `gmail\.com$`, Options: "i"}}
+)
 ```

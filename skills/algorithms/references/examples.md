@@ -1,5 +1,16 @@
 # 算法与数据结构 - 完整代码实现
 
+基线：go1.24.6，只依赖标准库。泛型约束用 `cmp.Ordered`，整数循环用 `for i := range n`。
+
+```go
+import (
+    "cmp"
+    "container/heap"
+    "math"
+    "slices"
+)
+```
+
 ## 目录
 
 - [排序算法](#排序算法)
@@ -297,7 +308,7 @@ func NextGreaterElement(nums []int) []int {
 
     stack := []int{} // 存储索引
 
-    for i := 0; i < n; i++ {
+    for i := range n {
         for len(stack) > 0 && nums[i] > nums[stack[len(stack)-1]] {
             idx := stack[len(stack)-1]
             stack = stack[:len(stack)-1]
@@ -312,8 +323,6 @@ func NextGreaterElement(nums []int) []int {
 ### 堆/优先队列
 
 ```go
-import "container/heap"
-
 // 实现 heap.Interface
 type MinHeap []int
 
@@ -372,7 +381,7 @@ func NewTrie() *Trie {
 func (t *Trie) Insert(word string) {
     node := t.root
     for _, ch := range word {
-        idx := ch - 'a'
+        idx := ch - 'a' // 仅支持小写字母，其他字符需先校验或改用 map[rune]*TrieNode
         if node.children[idx] == nil {
             node.children[idx] = &TrieNode{}
         }
@@ -503,6 +512,26 @@ type Edge struct {
     to, weight int
 }
 
+// 优先队列元素与实现
+type Item struct {
+    value    int // 节点
+    priority int // 距离
+}
+
+type PriorityQueue []*Item
+
+func (pq PriorityQueue) Len() int            { return len(pq) }
+func (pq PriorityQueue) Less(i, j int) bool  { return pq[i].priority < pq[j].priority }
+func (pq PriorityQueue) Swap(i, j int)       { pq[i], pq[j] = pq[j], pq[i] }
+func (pq *PriorityQueue) Push(x any)         { *pq = append(*pq, x.(*Item)) }
+func (pq *PriorityQueue) Pop() any {
+    old := *pq
+    n := len(old)
+    item := old[n-1]
+    *pq = old[:n-1]
+    return item
+}
+
 func Dijkstra(graph map[int][]Edge, start int, n int) []int {
     dist := make([]int, n)
     for i := range dist {
@@ -525,7 +554,7 @@ func Dijkstra(graph map[int][]Edge, start int, n int) []int {
         }
 
         for _, edge := range graph[node] {
-            newDist := dist[node] + edge.weight
+            newDist := d + edge.weight
             if newDist < dist[edge.to] {
                 dist[edge.to] = newDist
                 heap.Push(pq, &Item{priority: newDist, value: edge.to})
@@ -548,7 +577,7 @@ func TopologicalSort(graph map[int][]int, n int) ([]int, bool) {
     }
 
     queue := []int{}
-    for i := 0; i < n; i++ {
+    for i := range n {
         if inDegree[i] == 0 {
             queue = append(queue, i)
         }
@@ -587,7 +616,7 @@ func Knapsack01(weights, values []int, capacity int) int {
     n := len(weights)
     dp := make([]int, capacity+1)
 
-    for i := 0; i < n; i++ {
+    for i := range n {
         for w := capacity; w >= weights[i]; w-- {
             dp[w] = max(dp[w], dp[w-weights[i]]+values[i])
         }
@@ -600,7 +629,7 @@ func KnapsackComplete(weights, values []int, capacity int) int {
     n := len(weights)
     dp := make([]int, capacity+1)
 
-    for i := 0; i < n; i++ {
+    for i := range n {
         for w := weights[i]; w <= capacity; w++ {
             dp[w] = max(dp[w], dp[w-weights[i]]+values[i])
         }
@@ -640,7 +669,7 @@ func LIS(nums []int) int {
     tails := []int{}
 
     for _, num := range nums {
-        pos := sort.SearchInts(tails, num)
+        pos, _ := slices.BinarySearch(tails, num) // 第一个 >= num 的位置
         if pos == len(tails) {
             tails = append(tails, num)
         } else {
@@ -667,7 +696,7 @@ func KMP(text, pattern string) int {
     next := buildNext(pattern)
     j := 0
 
-    for i := 0; i < len(text); i++ {
+    for i := range len(text) {
         for j > 0 && text[i] != pattern[j] {
             j = next[j-1]
         }
@@ -726,7 +755,7 @@ func RabinKarp(text, pattern string) int {
 
     // 预计算 base^(m-1) % mod
     pow := 1
-    for i := 0; i < len(pattern)-1; i++ {
+    for range len(pattern) - 1 {
         pow = (pow * base) % mod
     }
 

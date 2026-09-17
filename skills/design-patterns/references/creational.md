@@ -1,5 +1,7 @@
 # 创建型模式 - 完整代码实现
 
+基线：go1.24.6，只依赖标准库。
+
 ## 目录
 
 - [1. 单例模式 Singleton](#1-单例模式singleton)
@@ -183,14 +185,10 @@ type Document struct {
 }
 
 func (d *Document) Clone() Cloneable {
-    meta := make(map[string]string)
-    for k, v := range d.Meta {
-        meta[k] = v
-    }
     return &Document{
         Title:   d.Title,
         Content: d.Content,
-        Meta:    meta,
+        Meta:    maps.Clone(d.Meta), // 深拷贝 map，避免共享
     }
 }
 ```

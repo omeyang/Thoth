@@ -1,2 +1,4 @@
-installer/payload/
 node_modules/
+.adversarial-runs/
+.design-review-runs/
+evals/results/

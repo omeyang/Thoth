@@ -1,13 +1,14 @@
 ---
 name: algorithms
 description: "Go 算法与数据结构专家 - 实现高效算法、选择合适数据结构、分析时间空间复杂度。适用：性能优化、算法设计、数据结构选择、排序查找实现、图算法、动态规划、字符串匹配。不适用：纯业务逻辑开发（无算法需求）、数据库查询优化（应使用 db 专家）、前端/UI 开发。触发词：algorithm, sort, search, binary search, graph, BFS, DFS, dynamic programming, DP, trie, heap, union-find, KMP, 排序, 查找, 算法, 数据结构, 复杂度"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # 算法与数据结构专家
 
 解决算法问题：$ARGUMENTS
+
+基线：go1.24.6。生产代码优先用标准库：`slices.Sort`/`slices.SortFunc`（pdqsort）、`slices.BinarySearch`、
+`container/heap`、`maps`、`cmp.Compare`；手写实现用于理解原理、面试和标准库不覆盖的场景。
 
 ## 时间复杂度速查
 
@@ -52,7 +53,7 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 - **0-1 背包** `Knapsack01(weights, values []int, capacity int) int` - 每个物品只能选一次
 - **完全背包** `KnapsackComplete(weights, values []int, capacity int) int` - 每个物品可选无限次
 - **LCS** `LCS(s1, s2 string) int` - 最长公共子序列
-- **LIS** `LIS(nums []int) int` - 最长递增子序列，O(n log n) 解法
+- **LIS** `LIS(nums []int) int` - 最长递增子序列，O(n log n) 解法（`slices.BinarySearch` 找插入位）
 
 ## 字符串算法
 
@@ -84,3 +85,4 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ## 参考资料
 
 - [完整代码实现](references/examples.md) - 所有算法和数据结构的完整 Go 泛型实现
+- [slices 包](https://pkg.go.dev/slices) · [container/heap](https://pkg.go.dev/container/heap) · [cmp](https://pkg.go.dev/cmp)

@@ -1,5 +1,7 @@
 # 结构型模式 - 完整代码实现
 
+基线：go1.24.6；缓存代理依赖 `github.com/hashicorp/golang-lru/v2 v2.0.7`，适配器示例依赖 `go.uber.org/zap`。
+
 ## 目录
 
 - [1. 适配器模式 Adapter](#1-适配器模式adapter)
@@ -129,6 +131,13 @@ type Handler interface {
     Handle(ctx context.Context, req Request) (Response, error)
 }
 
+// HandlerFunc 让普通函数满足 Handler
+type HandlerFunc func(ctx context.Context, req Request) (Response, error)
+
+func (f HandlerFunc) Handle(ctx context.Context, req Request) (Response, error) {
+    return f(ctx, req)
+}
+
 // 日志装饰器
 func WithLogging(h Handler, logger Logger) Handler {
     return HandlerFunc(func(ctx context.Context, req Request) (Response, error) {
@@ -140,7 +149,7 @@ func WithLogging(h Handler, logger Logger) Handler {
     })
 }
 
-// 重试装饰器
+// 重试装饰器（尊重 ctx 取消）
 func WithRetry(h Handler, maxRetries int) Handler {
     return HandlerFunc(func(ctx context.Context, req Request) (Response, error) {
         var lastErr error
@@ -150,7 +159,11 @@ func WithRetry(h Handler, maxRetries int) Handler {
                 return resp, nil
             }
             lastErr = err
-            time.Sleep(time.Duration(i*100) * time.Millisecond)
+            select {
+            case <-ctx.Done():
+                return Response{}, ctx.Err()
+            case <-time.After(time.Duration(i+1) * 100 * time.Millisecond):
+            }
         }
         return Response{}, lastErr
     })
@@ -245,16 +258,23 @@ func (f *IconFactory) GetIcon(name string) *Icon {
 **意图**：为其他对象提供一种代理以控制对这个对象的访问
 
 ```go
-// 缓存代理
+// 缓存代理（github.com/hashicorp/golang-lru/v2 v2.0.7，泛型 LRU）
 type CachingProxy struct {
     service Service
-    cache   *lru.Cache
-    ttl     time.Duration
+    cache   *lru.Cache[string, Result]
+}
+
+func NewCachingProxy(service Service, size int) (*CachingProxy, error) {
+    cache, err := lru.New[string, Result](size)
+    if err != nil {
+        return nil, err
+    }
+    return &CachingProxy{service: service, cache: cache}, nil
 }
 
 func (p *CachingProxy) Query(ctx context.Context, key string) (Result, error) {
     if cached, ok := p.cache.Get(key); ok {
-        return cached.(Result), nil
+        return cached, nil
     }
 
     result, err := p.service.Query(ctx, key)

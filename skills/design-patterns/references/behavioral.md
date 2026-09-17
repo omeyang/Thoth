@@ -1,5 +1,7 @@
 # 行为型模式 - 完整代码实现
 
+基线：go1.24.6，只依赖标准库。
+
 ## 目录
 
 - [1. 责任链模式 Chain of Responsibility](#1-责任链模式chain-of-responsibility)
@@ -40,7 +42,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 func AuthMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         if r.Header.Get("Authorization") == "" {
-            http.Error(w, "unauthorized", 401)
+            http.Error(w, "unauthorized", http.StatusUnauthorized)
             return
         }
         next.ServeHTTP(w, r)
@@ -69,7 +71,7 @@ type CreateFileCommand struct {
 }
 
 func (c *CreateFileCommand) Execute() error {
-    return os.WriteFile(c.path, c.content, 0644)
+    return os.WriteFile(c.path, c.content, 0o644)
 }
 
 func (c *CreateFileCommand) Undo() error {
@@ -106,7 +108,16 @@ func (m *CommandManager) Undo() error {
 **意图**：提供一种方法顺序访问聚合对象中的各个元素
 
 ```go
-// Go 1.23+ 使用 iter 包
+import "iter"
+
+type Node[T any] struct {
+    value       T
+    left, right *Node[T]
+}
+
+type Tree[T any] struct{ root *Node[T] }
+
+// 使用 iter 包暴露中序遍历
 func (t *Tree[T]) All() iter.Seq[T] {
     return func(yield func(T) bool) {
         t.iterate(t.root, yield)
@@ -235,8 +246,7 @@ func (s *Subject) Attach(o Observer) {
 
 func (s *Subject) Notify(event Event) {
     s.mu.RLock()
-    observers := make([]Observer, len(s.observers))
-    copy(observers, s.observers)
+    observers := slices.Clone(s.observers) // 复制后再解锁，回调中可安全 Attach
     s.mu.RUnlock()
 
     for _, o := range observers {
@@ -250,12 +260,22 @@ type Subscription struct {
     cancel func()
 }
 
-func (s *Subject) SubscribeChan(bufSize int) *Subscription {
+func (s *Subject) SubscribeChan(ctx context.Context, bufSize int) *Subscription {
     ch := make(chan Event, bufSize)
-    done := make(chan struct{})
-    // ... 注册
-    return &Subscription{Events: ch, cancel: func() { close(done) }}
+    ctx, cancel := context.WithCancel(ctx)
+    s.Attach(observerFunc(func(e Event) {
+        select {
+        case ch <- e:
+        case <-ctx.Done(): // 订阅者已取消，丢弃事件
+        default: // 缓冲满时不阻塞发布者
+        }
+    }))
+    return &Subscription{Events: ch, cancel: cancel}
 }
+
+type observerFunc func(Event)
+
+func (f observerFunc) OnNotify(e Event) { f(e) }
 ```
 
 ---
@@ -336,7 +356,7 @@ func (p *FileProcessor) ProcessFile(path string) error {
         return err
     }
 
-    return os.WriteFile(path+".compressed", compressed, 0644)
+    return os.WriteFile(path+".compressed", compressed, 0o644)
 }
 ```
 
@@ -363,7 +383,7 @@ func Export(ctx context.Context, exporter DataExporter, path string) error {
     data := exporter.Transform(records)
     filename := path + exporter.GetExtension()
 
-    return os.WriteFile(filename, data, 0644)
+    return os.WriteFile(filename, data, 0o644)
 }
 
 type CSVExporter struct{ db *sql.DB }

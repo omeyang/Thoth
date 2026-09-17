@@ -1,4 +1,4 @@
-# Map 实现：Swiss Tables（Go 1.24+）
+# Map 实现：Swiss Tables（Go 1.24）
 
 聚焦 SKILL.md §4 的细节：新旧实现差异、迁移影响、性能特征。
 
@@ -53,24 +53,26 @@ loop:
 
 ---
 
-## 2. 新实现（Go 1.24+）：Swiss Tables
+## 2. 新实现（Go 1.24）：Swiss Tables
 
 ### 2.1 设计来源
 
 Google Abseil `flat_hash_map`。核心思想：
 
-- **groups of 8 slots**（或 16，架构相关）
+- **groups of 8 slots**（Go 固定 8 槽，与架构无关）
 - 每个 group 一个 **control byte 数组**（1 byte/slot）存元数据
-- **SIMD 并行比较** 8 个 control byte
+- 8 个 control byte 装进一个 64 位字，**位运算（SWAR）并行比较**，不依赖硬件 SIMD
+- 单张 table 最多 1024 槽；更大的 map 由目录（directory）索引多张 table，扩容按 table 增量进行；≤ 8 个元素的小 map 只有一个 group，无目录
 
 ### 2.2 结构（简化）
 
 ```
 table
- ├── ctrl[]      (control bytes，1 字节/slot)
- │                  0xFE=空, 0x80=墓碑(已删除), 其他=哈希低 7 位 h2(hash)
- ├── slots[]     (kv pairs)
- └── growthLeft  (还能容纳多少次插入)
+ ├── groups[]    每组 8 槽
+ │    ├── ctrl[8]   control bytes，1 字节/slot
+ │    │             0x80=空, 0xFE=墓碑(已删除), 0x00-0x7F=哈希低 7 位 h2(hash)
+ │    └── slots[8]  kv pairs
+ └── growthLeft  还能容纳多少次插入（负载因子 7/8）
 ```
 
 ### 2.3 查找
@@ -84,25 +86,25 @@ groupIdx := h1 mod numGroups
 loop:
     group := ctrl[groupIdx * 8 .. +8]   // 8 bytes
 
-    // SIMD：一次比较 8 个 ctrl 是否等于 h2
-    matches := SIMD_cmpeq(group, h2)
+    // SWAR：把 8 个 ctrl 当一个 uint64，一次比较是否等于 h2
+    matches := matchH2(group, h2)
 
     // matches 是 8 位 mask，每 1 代表一个候选 slot
     for i in matches.bits():
         if slots[groupIdx*8 + i].key == key:
             return slots[groupIdx*8 + i].value
 
-    // 若 group 有空 slot（ctrl == 0xFE）→ 未找到
-    if SIMD_hasEmpty(group): return notFound
+    // 若 group 有空 slot（ctrl == 0x80）→ 未找到
+    if matchEmpty(group) != 0: return notFound
 
     // 否则继续下一个 group（开放寻址探测）
     groupIdx = (groupIdx + 1) mod numGroups
 ```
 
 **关键收益**：
-1. ctrl 很紧凑（1 字节/slot），一个 cache line（64B）容纳 64 个 ctrl
-2. SIMD 比较 8 个 ctrl 只 1 条指令（x86 AVX2、ARM NEON）
-3. 空 slot 检测也 SIMD 化，探测终止快
+1. ctrl 很紧凑（1 字节/slot），一个 group 的 ctrl 只占 8 字节，一次 load 覆盖
+2. 比较 8 个 ctrl 是几条整数位运算指令，所有架构一致
+3. 空 slot 检测同样位运算化，探测终止快
 
 ### 2.4 装填因子
 
@@ -141,7 +143,7 @@ Swiss Tables 的固定元数据（ctrl 数组、growth counter 等）有最低�
 
 ### 4.1 绝大多数代码无需改动
 
-升级 Go 到 1.24+ 即得性能改善，**无源码变动**。
+go1.24.6 下直接生效，**无源码变动**。
 
 ### 4.2 可能变化的行为
 
@@ -171,12 +173,12 @@ grep -rn "shards\[.*\]" --include="*.go"
 
 能简化回 `sync.Map` 或带锁 `map` 的场景考虑简化。
 
-### 4.4 sync.Map 也受益
+### 4.4 sync.Map 单独换了实现
 
-`sync.Map` 内部也用新 map 实现。读多写少场景（稳定键集）性能可能和 `atomic.Pointer[map[K]V] + COW` 更接近。但仍推荐：
+`sync.Map` 在 1.24 换成基于并发哈希 trie（HashTrieMap）的实现，与 Swiss Tables 无关。收益集中在修改路径（Store/Delete/LoadOrStore）和键集合不断变化的场景。仍推荐：
 
 - 键稳定 → `atomic.Pointer[map[K]V]` COW（无锁读）
-- 键不断变 → `sync.Map`（1.24+ 改进）
+- 键不断变 → `sync.Map`（1.24 HashTrieMap）
 
 ---
 
@@ -196,7 +198,7 @@ m := make(map[string]int, 10_000)   // 避免反复 rehash
 for k := range m { delete(m, k) }   // 墓碑可能不立即清理
 ```
 
-**清空用 `clear(m)`（Go 1.21+ 内置）**，直接重置底层结构：
+**清空用 `clear(m)`（内置函数）**，直接重置底层结构：
 
 ```go
 clear(m)   // O(1)，无墓碑残留
@@ -207,7 +209,7 @@ clear(m)   // O(1)，无墓碑残留
 ```go
 import "maps"
 
-m2 := maps.Clone(m)   // Go 1.21+
+m2 := maps.Clone(m)
 ```
 
 比手写 for-loop 快（运行时内部按 group 拷贝）。
@@ -239,7 +241,7 @@ go tool pprof -http=:8080 heap.pb.gz
 
 ### 6.2 len 不等于内存
 
-`len(m)` 是元素数。实际内存：ctrl + slots + 负载因子 overhead。10^6 key/int64 value 的 map 约占 50-60 MiB（1.24+）。
+`len(m)` 是元素数。实际内存：ctrl + slots + 负载因子 overhead。10^6 key/int64 value 的 map 约占 50-60 MiB（1.24）。
 
 ### 6.3 map 遍历分配
 
@@ -289,8 +291,7 @@ m := map[K]int{}
 - Go 1.7: 改进 hash（对 string 用 aeshash）
 - Go 1.8: 更好的重哈希（避免 O(n) 峰值）
 - Go 1.18: 加入泛型（类型特化内联）
-- **Go 1.24: Swiss Tables 全量替换**
-- Go 1.25: 对 sync.Map 的连锁改进
+- **Go 1.24: Swiss Tables 全量替换**；`sync.Map` 同版本换成 HashTrieMap（独立实现）
 
 ---
 
@@ -319,4 +320,4 @@ m := map[K]int{}
 - 并发用 `sync.Map` 或 RWMutex
 - 不依赖遍历顺序
 - 不要 interface key 在热路径
-- 升级到 Go 1.24+ 享受 Swiss Tables
+- 工具链固定 go1.24.6，Swiss Tables 默认生效

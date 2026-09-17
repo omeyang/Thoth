@@ -1,6 +1,6 @@
-# GC 深度（Go 1.25.9+）
+# GC 深度（基线 go1.24.6）
 
-聚焦 SKILL.md §2 的细节：屏障正确性、pacer 数学、Green Tea 区别。
+聚焦 SKILL.md §2 的细节：屏障正确性、pacer 数学、GODEBUG 与抖动诊断。
 
 ---
 
@@ -84,7 +84,7 @@ write_barrier(p, q):
 - `GOGC=200`: 堆增长 200% 才触发（更少 GC，更大 heap）
 - `GOGC=off`: 不触发自动 GC
 
-### 3.2 Pacer 反馈控制（Go 1.18+ 重写）
+### 3.2 Pacer 反馈控制（Go 1.18 重写）
 
 旧 Pacer 是 PI 控制器；1.18+ 改为 **PI with soft memory limit**。算法（简化）：
 
@@ -101,7 +101,7 @@ write_barrier(p, q):
 
 "assist" 就是应用 goroutine 被 pacer 判定为"欠债"时，被拉去帮忙。CPU profile 中 `gcAssistAlloc` 宽 = 分配太快、GC 跟不上。
 
-### 3.3 soft memory limit（1.19+）
+### 3.3 soft memory limit（GOMEMLIMIT）
 
 `GOMEMLIMIT=4GiB` 给 pacer 另一个目标：**heap 绝不超过 4GB**。
 
@@ -118,43 +118,16 @@ write_barrier(p, q):
 
 ---
 
-## 4. Green Tea GC（Go 1.25 实验）
+## 4. gctrace 一行怎么读
 
-### 4.1 动机
-
-传统 pacer 在以下场景表现差：
-- 大堆（>10GB）+ 高分配率：assist 比例大，应用吞吐下降
-- 活对象占比变化剧烈：pacer 估算失准
-- NUMA 机器：跨节点扫描慢
-
-### 4.2 Green Tea 改进点
-
-（基于公开提案 + 1.25 release notes）：
-- **更聪明的 work distribution**：mark worker 分片更均衡
-- **减少 assist**：应用 goroutine 少被拉去帮忙
-- **改进的 pacer**：对突发分配更鲁棒
-
-### 4.3 启用和评估
-
-```bash
-# Baseline
-./app 2>&1 | tee base.log
-GODEBUG=gctrace=1 ./app 2>&1 > base-gc.log
-
-# Green Tea
-GOEXPERIMENT=greenteagc ./app 2>&1 | tee gt.log
-GODEBUG=gctrace=1 GOEXPERIMENT=greenteagc ./app 2>&1 > gt-gc.log
-
-# 对比：STW 分布、GC 占比、p99 延迟
+```
+gc 12 @1.234s 5%: 0.1+2.3+0.02 ms clock, 0.8+1.1/4.6/0.9+0.16 ms cpu, 45->48->50 MB, 90 MB goal, 0 MB stacks, 0 MB globals, 8 P
 ```
 
-典型改善：p99 延迟 -20-40%，吞吐持平或 -1-3%。
-
-### 4.4 何时不启用
-
-- 小堆（<1GB）：效果不明显
-- 1.25 早期 patch 版（等到 1.25.6+ 稳定）
-- 对 CPU 占比极敏感的后台任务（可能吞吐略降）
+- `0.1+2.3+0.02 ms clock`：sweep termination STW + 并发 mark + mark termination STW 的挂钟时间
+- `0.8+1.1/4.6/0.9+0.16 ms cpu`：中间 `1.1/4.6/0.9` 是 mark 阶段的 **assist / background worker / idle worker** CPU 时间。assist 占比高就是应用 goroutine 在替 GC 干活（§3.2）
+- `45->48->50 MB`：GC 开始时堆、GC 结束时堆、结束时活堆
+- `90 MB goal`：本轮 pacer 的目标堆（活堆 × (1 + GOGC/100)，受 GOMEMLIMIT 压低）
 
 ---
 
@@ -212,8 +185,8 @@ p99  5ms 5ms 80ms 5ms 5ms 80ms ...   ← 每隔一段出现高峰
    10^5 以上 goroutine → 栈扫描成本高
 4. **看活对象数**
    `heap goal` 相对 `heap live` 很接近 → 分配速率跟不上
-5. **对比 Green Tea**
-   `GOEXPERIMENT=greenteagc` 后 STW 是否明显降
+5. **看 assist 占比**
+   gctrace 的 cpu 段中 assist 时间接近或超过 background → 分配速率过快，pacer 在拉应用 goroutine 还债
 6. **最终手段**：降低分配速率（见 go-performance §4）
 
 ---

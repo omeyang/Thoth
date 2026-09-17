@@ -14,13 +14,13 @@
 
 ## 依赖组件
 
-| 组件 | 路径 | 用途 |
+| 组件 | 类型 | 用途 |
 |------|------|------|
-| code-reviewer Agent | `agents/code-reviewer/AGENT.md` | 代码审查（6 维度） |
-| security-auditor Agent | `agents/security-auditor/AGENT.md` | 安全审计（6 维度） |
-| code-checklist.md | `references/code-checklist.md` | A/B/C 检查清单 |
-| judgment-matrix.md | `references/judgment-matrix.md` | 风险等级裁决 |
-| checklist-evolution.md | `references/checklist-evolution.md` | 演化记录 |
+| `thoth:code-reviewer` | Agent 子代理 | 代码审查（6 维度） |
+| `thoth:security-auditor` | Agent 子代理 | 安全审计（6 维度） |
+| `code-checklist.md` | references | A/B/C 检查清单 |
+| `judgment-matrix.md` | references | 风险等级裁决 |
+| `checklist-evolution.md` | references | 演化记录 |
 
 ---
 
@@ -38,14 +38,12 @@
 
 ### 阶段 2：审查员审查
 
-使用 Task 工具调用 code-reviewer Agent：
+用 Agent 工具调用 `thoth:code-reviewer` 子代理（审查指南已内置于子代理，prompt 只描述任务）：
 
 ```
-Task(
-  subagent_type = "general-purpose",
+Agent(
+  subagent_type = "thoth:code-reviewer",
   prompt = """
-  读取 agents/code-reviewer/AGENT.md 获取你的审查指南。
-
   ## 特殊指令
 
   你是对抗审查流程中的"审查员"角色。你的任务是**尽可能多地发现候选问题**：
@@ -72,14 +70,12 @@ Task(
 
 ### 阶段 3：安全审计
 
-与阶段 2 **并行**，使用 Task 工具调用 security-auditor Agent：
+与阶段 2 **并行**，用 Agent 工具调用 `thoth:security-auditor` 子代理：
 
 ```
-Task(
-  subagent_type = "general-purpose",
+Agent(
+  subagent_type = "thoth:security-auditor",
   prompt = """
-  读取 agents/security-auditor/AGENT.md 获取你的审计指南。
-
   ## 特殊指令
 
   你是对抗审查流程中的"安全审计员"角色。你的任务是从安全视角**尽可能多地发现候选漏洞和安全问题**：
@@ -98,7 +94,7 @@ Task(
 )
 ```
 
-**并行执行:** 阶段 2 和阶段 3 必须在同一消息中并行发起两个 Task 调用。
+**并行执行:** 阶段 2 和阶段 3 必须在同一消息中并行发起两个 Agent 调用。
 
 ### 阶段 4：验证员质疑
 
@@ -193,7 +189,7 @@ Task(
 
 ## 降级策略
 
-如果 Task 调用失败（Agent 不可用、超时等），自动降级为 local-review 模式：
+如果 Agent 调用失败（子代理不可用、超时等），自动降级为 local-review 模式：
 1. 告知用户降级原因
 2. 按 `local-review.md` 的 5 步流程继续
 3. 在报告中标注"[降级] 原计划 teams 模式，因 <原因> 降级为 local 模式"

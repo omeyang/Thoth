@@ -1,8 +1,8 @@
 # defer / interface / reflect / sync 原语深入
 
-> 基线 Go 1.25.9+。本文整合 `SKILL.md` §6–§8 的底层细节，给调试和性能归因提供第一手依据。
+> 基线 go1.24.6。本文整合 `SKILL.md` §6–§8 的底层细节，给调试和性能归因提供第一手依据。
 >
-> **资料警示**：Draven《Go 语言设计与实现》、geektutu《高性能 Go 编程》对 defer/interface/reflect 的讲解大体仍准确，但缺 Go 1.14+ open-coded 的硬约束、1.19+ pacer 改版、1.21+ PGO 去虚化、1.24+ Swiss Tables 对 `sync.Map` 的影响。本文以 1.25.9 为准。
+> **资料警示**：Draven《Go 语言设计与实现》、geektutu《高性能 Go 编程》对 defer/interface/reflect 的讲解大体仍准确，但缺 Go 1.14+ open-coded 的硬约束、1.19+ pacer 改版、1.21+ PGO 去虚化、1.24 `sync.Map` 换成 HashTrieMap。本文以 go1.24.6 为准。
 
 ---
 
@@ -112,7 +112,7 @@ i = 42
 # 看某函数是否 open-code
 go build -gcflags="-m=2" ./... 2>&1 | grep -E "open-coded defer|heap-allocated defer"
 
-# 微基准验证（go 1.24+ 用 b.Loop）
+# 微基准验证（Go 1.24 用 b.Loop）
 go test -run=^$ -bench=BenchmarkDefer -benchmem -count=10 -cpuprofile=cpu.pb.gz
 go tool pprof -list=BenchmarkDefer cpu.pb.gz
 ```
@@ -164,7 +164,7 @@ r.Read(buf)
 // 3. call  *rax 间接跳转（分支预测正确几乎免费；miss 时 20+ cycles）
 ```
 
-**相对开销**（同基线，Draven 基准复测，Go 1.25 同一数量级）：
+**相对开销**（同基线，Draven 基准复测，Go 1.24 同一数量级）：
 
 | 调用方式 | 相对耗时 | 备注 |
 |---|---|---|
@@ -229,7 +229,7 @@ return ErrNone                 // 空 iface{tab:nil,data:nil}，== nil 为 true
 
 ### 3.1 Value/Type 获取路径
 
-- `reflect.TypeOf(v)` / `reflect.ValueOf(v)` 本质是从 eface 提取 `_type` / 构造 `Value{typ, ptr, flag}`。参数是 `interface{}` → 已发生一次装箱（可能逃堆）。
+- `reflect.TypeOf(v)` / `reflect.ValueOf(v)` 本质是从 eface 提取 `_type` / 构造 `Value{typ, ptr, flag}`。参数是 `any` → 已发生一次装箱（可能逃堆）。
 - 之后的 `Field`、`Index`、`MapIndex` 都要 **type-check + bounds-check**，没有编译期优化。
 
 ### 3.2 reflect.Value.Call 的五步慢路径
@@ -361,7 +361,7 @@ func (h *Holder) Update(mutate func(*Config) *Config) {
 - 写路径 CAS 循环，冲突高时退化——但 COW 适合**基本只读、偶尔批量更新**的场景
 - 典型用途：路由表、配置快照、限流规则、feature flags
 
-对比 `sync.Map`：键集合频繁变化、需要读写混合时用 `sync.Map`（1.24 底层已换 Swiss Tables，读路径更好）；键集合基本不变、整体替换用 `atomic.Pointer[map[K]V]` + COW。
+对比 `sync.Map`：键集合频繁变化、需要读写混合时用 `sync.Map`（1.24 底层换成 HashTrieMap，修改路径和读路径都改善）；键集合基本不变、整体替换用 `atomic.Pointer[map[K]V]` + COW。
 
 ---
 
@@ -379,8 +379,8 @@ go tool pprof -top cpu.pb.gz | grep -E "reflect\."
 
 # mutex/block/race
 go test -race ./...
-GODEBUG=mutex_contention=1 ./app              # 1.24+ 可选诊断
 go test -blockprofile=block.pb.gz -mutexprofile=mutex.pb.gz -bench=.
+# 生产服务：runtime.SetMutexProfileFraction(1) + runtime.SetBlockProfileRate(1)，再抓 /debug/pprof/mutex、/debug/pprof/block
 
 # 查看 _defer 链（panic 时）
 GOTRACEBACK=all ./app 2>&1 | less

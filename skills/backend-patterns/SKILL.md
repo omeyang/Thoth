@@ -1,13 +1,14 @@
 ---
 name: backend-patterns
 description: "Go 后端架构模式专家 - 分层架构(Handler/Service/Repository)、缓存策略(Cache-Aside/Write-Through)、错误处理、认证授权(JWT/RBAC)、限流(令牌桶)、队列、中间件链、结构化日志。适用：系统设计、架构决策、服务开发、API 设计、N+1 查询优化、事务管理。不适用：前端/UI 开发；纯算法或数据结构问题；基础设施运维(K8s/Terraform)。触发词：backend, 后端, architecture, 架构, repository, 缓存, cache, middleware, 中间件, rate-limit, 限流, JWT, RBAC, REST, API设计, 分层"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # 后端架构模式专家
 
 应用后端架构模式设计或实现服务：$ARGUMENTS
+
+基线：go1.24.6。示例依赖：`go.mongodb.org/mongo-driver/v2 v2.8.2`、`github.com/golang-jwt/jwt/v5 v5.3.1`、
+`github.com/google/uuid v1.6.0`；路由用标准库 `http.ServeMux`（方法 + 路径模式，`r.PathValue`）。
 
 ---
 
@@ -15,16 +16,16 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 
 ### RESTful API 结构
 
-```go
-// 资源导向的 URL 设计
-GET    /api/v1/users              // 列出资源
-GET    /api/v1/users/:id          // 获取单个资源
-POST   /api/v1/users              // 创建资源
-PUT    /api/v1/users/:id          // 替换资源
-PATCH  /api/v1/users/:id          // 更新资源
-DELETE /api/v1/users/:id          // 删除资源
+```
+# 资源导向的 URL 设计（http.ServeMux 模式语法）
+GET    /api/v1/users              # 列出资源
+GET    /api/v1/users/{id}         # 获取单个资源
+POST   /api/v1/users              # 创建资源
+PUT    /api/v1/users/{id}         # 替换资源
+PATCH  /api/v1/users/{id}         # 更新资源
+DELETE /api/v1/users/{id}         # 删除资源
 
-// 查询参数用于过滤、排序、分页
+# 查询参数用于过滤、排序、分页
 GET /api/v1/users?status=active&sort=created_at&limit=20&offset=0
 ```
 
@@ -94,6 +95,9 @@ type TxManager interface {
 }
 ```
 
+mongo-driver v2：`session.WithTransaction(ctx, func(ctx context.Context) (any, error) {...})`，
+回调收到的 `ctx` 已绑定 session，直接传给 Repository 即可。
+
 > 完整 MongoDB 事务实现见 [references/examples.md](references/examples.md#事务模式实现)
 
 ---
@@ -147,7 +151,8 @@ func WithRetry[T any](ctx context.Context, cfg RetryConfig, fn func() (T, error)
 
 ### JWT 验证
 
-AuthService.ValidateToken + AuthMiddleware，从 Authorization header 提取 Bearer token。
+`github.com/golang-jwt/jwt/v5 v5.3.1`：`jwt.ParseWithClaims` + `jwt.WithValidMethods` 固定算法，
+AuthMiddleware 从 Authorization header 提取 Bearer token，claims 用类型化 key 放入 context。
 
 ### 基于角色的访问控制
 

@@ -1,15 +1,13 @@
 ---
 name: go-runtime
-description: "Go 运行时原理专家（Go 1.25.9+ 基线）- 深入 GMP 调度器（work-stealing、抢占、netpoll）、GC（三色标记+混合写屏障+pacer）、内存分配器（mspan/mcache/mcentral/mheap）、Swiss Tables map 实现（1.24+）、Channel（hchan）、defer 演进（open-coded）、接口 itab、反射成本、sync 原语底层。适用：性能问题根因分析、异常行为排查（GC 抖动、调度延迟、死锁）、运行时调优决策依据、面试/架构评审中的原理解释、GODEBUG 调试解读。不适用：性能优化实操（用 go-performance）、业务代码编写（用 golang-patterns）、简单 bug 修复（无需原理）。触发词：runtime, 运行时, GMP, scheduler, 调度器, goroutine 调度, GC, garbage collector, 垃圾回收, 三色标记, 写屏障, pacer, mcache, mcentral, mheap, mspan, Swiss Tables, hchan, channel 底层, defer 实现, itab, netpoll, GODEBUG, gctrace, schedtrace"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+description: "Go 运行时原理专家（基线 go1.24.6）- 深入 GMP 调度器（work-stealing、抢占、netpoll）、GC（三色标记+混合写屏障+pacer）、内存分配器（mspan/mcache/mcentral/mheap）、Swiss Tables map 实现（Go 1.24）、Channel（hchan）、defer 演进（open-coded）、接口 itab、反射成本、sync 原语底层。适用：性能问题根因分析、异常行为排查（GC 抖动、调度延迟、死锁）、运行时调优决策依据、面试/架构评审中的原理解释、GODEBUG 调试解读。不适用：性能优化实操（用 go-performance）、业务代码编写（用 golang-patterns）、简单 bug 修复（无需原理）。触发词：runtime, 运行时, GMP, scheduler, 调度器, goroutine 调度, GC, garbage collector, 垃圾回收, 三色标记, 写屏障, pacer, mcache, mcentral, mheap, mspan, Swiss Tables, hchan, channel 底层, defer 实现, itab, netpoll, GODEBUG, gctrace, schedtrace"
 ---
 
 # Go 运行时原理专家
 
 回答运行时原理问题或提供调试依据：$ARGUMENTS
 
-**基线 Go 1.25.9+。所有内部机制以当前版本为准；历史演进作对比说明。**
+**基线 go1.24.6。所有内部机制以该版本为准；历史演进作对比说明。**
 
 ---
 
@@ -38,7 +36,7 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 **关系**：
 - M 必须绑 P 才能运行 G
 - P 数量通常 = CPU 核心数（`GOMAXPROCS`）
-- Go 1.25 起：Linux 下自动识别 cgroup CPU quota
+- Go 1.24 默认 `GOMAXPROCS = runtime.NumCPU()`，不读 cgroup CPU quota；容器内用 `go.uber.org/automaxprocs`（见 `references/scheduler.md` §8）
 
 ### 1.2 调度循环
 
@@ -136,7 +134,7 @@ GODEBUG=schedtrace=1000,scheddetail=1 ./app
 - `GOGC=100` 默认：下次 GC 时堆最多是活堆的 2 倍
 - `GOGC=off` 关闭自动 GC（仅手动 `runtime.GC()`）
 
-**GOMEMLIMIT（1.19+）**：加入"软上限"，超过时强制加速 GC 频率，即使尚未达到 GOGC 目标。容器部署必设。
+**GOMEMLIMIT**：加入"软上限"，超过时强制加速 GC 频率，即使尚未达到 GOGC 目标。容器部署必设。
 
 ### 2.5 GC 协助（Assist）
 
@@ -144,18 +142,15 @@ GODEBUG=schedtrace=1000,scheddetail=1 ./app
 - CPU profile 中 `runtime.gcAssistAlloc` 宽 → 应用被 GC 拖累
 - 解决：降分配速率（`go-performance` §4）或提高 `GOMEMLIMIT`
 
-### 2.6 Green Tea GC（Go 1.25 实验）
+### 2.6 finalizer 与 `runtime.AddCleanup`（Go 1.24）
 
-`GOEXPERIMENT=greenteagc`：
-- 改进的 pacer 和 mark 任务调度
-- 面向大堆、高分配率场景
-- p99 延迟明显改善；吞吐可能微降或持平
+`runtime.SetFinalizer` 让对象至少多活一轮 GC（先标记可达执行 finalizer，下一轮才回收），且带 finalizer 的对象参与的引用环永远回收不掉。Go 1.24 新增 `runtime.AddCleanup(ptr, cleanup, arg)`：cleanup 拿不到对象指针，对象本轮即可回收；一个对象可挂多个 cleanup；可挂在内部指针上。新代码释放外部资源（fd、C 内存）一律用 `AddCleanup`，`SetFinalizer` 只留给存量代码。两者都不保证执行，正确性不能依赖它们。
 
 ### 2.7 GODEBUG gctrace=1
 
 字段解读与红灯阈值见 `go-performance` §6（此处不重复）。本技能关注**原理**：一行 gctrace 里 `0.1+2.3+0.02 ms clock` 的中间项是"并发 mark"阶段——它之所以不是 STW，全靠 §2.3 的混合写屏障。读懂这个结构就能判断 STW 抖动的根因。
 
-详见 `references/gc.md`（pacer 目标堆推导、assist 曲线、Green Tea 实验对比）。
+详见 `references/gc.md`（pacer 目标堆推导、assist 曲线、GC 相关 GODEBUG 全集）。
 
 ---
 
@@ -198,9 +193,9 @@ Go 栈从 2KiB 起，按需增长（拷贝到更大栈）。栈分配**极快**�
 
 ---
 
-## §4 Swiss Tables Map（Go 1.24+）
+## §4 Swiss Tables Map（Go 1.24）
 
-> ⚠️ **资料警示**：Draven《Go 语言设计与实现》、geektutu《高性能 Go 编程》等流行中文资料仍用 `hmap+bmap+overflow+装填因子 6.5 拉链法` 解释 Go map——那是 ≤1.23 实现，**1.24+ 已整体替换为 Swiss Tables**。下文以当前版本为准，旧结构仅作迁移对照。
+> ⚠️ **资料警示**：Draven《Go 语言设计与实现》、geektutu《高性能 Go 编程》等流行中文资料仍用 `hmap+bmap+overflow+装填因子 6.5 拉链法` 解释 Go map——那是 ≤1.23 实现，**1.24 已整体替换为 Swiss Tables**。下文以当前版本为准，旧结构仅作迁移对照。
 
 ### 4.1 旧实现（1.23 及以前）：buckets + chaining
 
@@ -212,15 +207,16 @@ Go 栈从 2KiB 起，按需增长（拷贝到更大栈）。栈分配**极快**�
 - 碰撞退化为链表扫描
 - 大 map 的碰撞尾部访问 cache 不友好
 
-### 4.2 新实现（1.24+）：Swiss Tables
+### 4.2 新实现（1.24）：Swiss Tables
 
-- 基于 Google Abseil 的设计
-- 更紧凑的 metadata（每槽位 1 字节控制字节）
-- **SIMD 友好**（一次检查 8 或 16 个槽位）
+- 基于 Google Abseil 的设计：开放寻址，8 槽一个 group
+- 更紧凑的 metadata（每槽位 1 字节控制字节，存哈希低 7 位）
+- 一个 group 的 8 个控制字节装进一个 64 位字，用位运算（SWAR）一次并行匹配，不依赖硬件 SIMD
+- 大 map 按 1024 槽拆成多张 table，用目录（extendible hashing）索引，扩容按 table 增量进行
 
 ### 4.3 性能特征变化
 
-| 操作 | 1.23 | 1.24+ |
+| 操作 | 1.23 | 1.24 |
 |---|---|---|
 | 小 map (<16) | 相当 | 略慢 |
 | 中 map (16-10000) | 基准 | **-10%~-30%** 延迟 |
@@ -230,9 +226,9 @@ Go 栈从 2KiB 起，按需增长（拷贝到更大栈）。栈分配**极快**�
 
 ### 4.4 对业务影响
 
-- **绝大多数应用**直接受益，升级 1.24+ 即得
+- **绝大多数应用**直接受益，无需改源码
 - 早期自己写的"分片 map"优化可能不再必要（不代表有害，但优先级降低）
-- `sync.Map` 内部也用 Swiss Tables，读多写少场景改善
+- `sync.Map` 在 1.24 单独换成基于 HashTrieMap 的实现，与 Swiss Tables 无关；修改路径（Store/Delete/LoadOrStore）改善最明显
 
 详见 `references/map-swiss-tables.md`。
 
@@ -368,7 +364,7 @@ r.Read(buf)          // 1. 读 iface.tab → itab
                      // 3. 间接跳转（分支预测失败时最贵）
 ```
 
-相比直接调用的开销量级（Draven 基准，Go 1.25 同一数量级）：
+相比直接调用的开销量级（Draven 基准，Go 1.24 复测同一数量级）：
 
 | 调用方式 | 相对开销 |
 |---|---|
@@ -376,13 +372,13 @@ r.Read(buf)          // 1. 读 iface.tab → itab
 | 接口（指针接收者） | **≈1.18×** |
 | 接口（值接收者，大结构） | **≈2.25×**（多一次拷贝） |
 
-热路径首选：具体类型 → 泛型（1.18+，编译期单态化同一 GCShape）→ PGO 辅助 devirtualize（1.21+）。
+热路径首选：具体类型 → 泛型（编译期单态化同一 GCShape）→ PGO 辅助 devirtualize。
 
 ### 7.3 热路径避免
 
 - 用具体类型
-- 用泛型（1.18+）—— 编译期单态化同一 GCShape
-- PGO 帮助 devirtualize（1.21+）
+- 用泛型 —— 编译期单态化同一 GCShape
+- PGO 帮助 devirtualize
 
 ### 7.4 类型断言成本
 
@@ -416,7 +412,7 @@ if s, ok := v.(*SomeStruct); ok { ... }
 - 读远多于写（>10:1）→ 用 RWMutex
 - 读写均衡 → 普通 Mutex
 
-### 8.3 Once 家族（1.21+ OnceFunc/OnceValue/OnceValues）
+### 8.3 Once 家族（OnceFunc/OnceValue/OnceValues）
 
 `Once` 核心是 `done` 原子标志 + 慢路径 mutex：已完成则直接返回，快速路径仅一次 `atomic.Load`。`OnceValue`/`OnceValues` 封装相同逻辑，生成更少样板，新代码默认用它。
 
@@ -424,7 +420,7 @@ if s, ok := v.(*SomeStruct); ok { ... }
 
 内部用一个 64 位原子字：高 32 位是计数，低 32 位是等待者数。`Wait` 等计数归零被唤醒。常见 race：`Add` 放进 goroutine 内部——必须在 `go` 之前。
 
-### 8.5 atomic.Pointer[T]（1.19+）
+### 8.5 atomic.Pointer[T]
 
 泛型包装，比裸 `unsafe.Pointer + atomic.LoadPointer` 多一层类型检查；CAS/Load/Store/Swap 齐全。用于 COW 共享结构（路由表、配置快照）——见 `go-performance` §5。
 
@@ -441,7 +437,6 @@ if s, ok := v.(*SomeStruct); ok { ... }
 | `scheddetail=1` | 配合 schedtrace，输出每个 P 详情 |
 | `allocfreetrace=1` | 打印每次 alloc/free（极冗长，仅小测试） |
 | `asyncpreemptoff=1` | 关闭信号抢占（调试） |
-| `containermaxprocs=1` | 1.25 诊断 GOMAXPROCS 自动检测 |
 | `http2debug=1` | net/http HTTP/2 调试 |
 | `madvdontneed=1` | 归还内存用 MADV_DONTNEED 而非 MADV_FREE |
 | `gcstoptheworld=1` | 每次 GC 全 STW（调试用，严重慢） |
@@ -464,14 +459,14 @@ GODEBUG=gctrace=1,schedtrace=1000,scheddetail=1 ./app 2>&1 | tee runtime.log
 | goroutine 数单调增长 | 泄漏 | `/debug/pprof/goroutine?debug=2` |
 | 启动后短暂高延迟 | JIT/PGO 未生效、pool 未暖 | 启动预热逻辑 |
 | 容器 OOM | 未设 GOMEMLIMIT | 见 §2.4 |
-| map 查找耗时分布极不均匀 | 碰撞尾（1.23 及以前） | 升级 1.24+ Swiss Tables 或分片 map |
+| map 查找耗时分布极不均匀 | 旧工具链（1.23 及以前）的碰撞尾；或 key 哈希质量差 | 确认工具链为 go1.24.6；仍不均匀则检查自定义 key 类型或分片 map |
 
 ---
 
 ## References
 
 - [scheduler.md](references/scheduler.md) — GMP 详细实现、work-stealing、sysmon、netpoll
-- [gc.md](references/gc.md) — 三色标记+混合写屏障细节、pacer、Green Tea
+- [gc.md](references/gc.md) — 三色标记+混合写屏障细节、pacer、GODEBUG、抖动诊断
 - [memory-allocator.md](references/memory-allocator.md) — mcache/mcentral/mheap 详图、sizeclass、arena
 - [channel.md](references/channel.md) — hchan 全流程、select、close 语义
 - [map-swiss-tables.md](references/map-swiss-tables.md) — 新旧 map 实现对比、迁移影响
@@ -481,4 +476,4 @@ GODEBUG=gctrace=1,schedtrace=1000,scheddetail=1 ./app 2>&1 | tee runtime.log
 
 - `go-performance` —— 具体优化技术和 runbook
 - `golang-patterns` —— 惯用法和 Modern Go 特性
-- `go-test` —— 用 testing/synctest 验证并发正确性
+- `go-test` —— 并发正确性验证（`-race`、goleak；`GOEXPERIMENT=synctest` 仅实验）

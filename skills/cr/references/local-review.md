@@ -108,6 +108,30 @@ bash -n script.sh
 
 如果变更涉及文档文件（`.md`、`README`、`doc.go`、docstring），同时参照 `references/doc-checklist.md` 检查。
 
+#### Go 快速自检清单
+
+在逐条对照 `code-checklist.md` 之前，先用下表做一遍快速自检；任一 Must 项未满足直接记为 A 级发现。
+
+**必查项（Must）**
+- [ ] 无编译错误（`go build ./...`）
+- [ ] 无 golangci-lint 错误
+- [ ] 测试覆盖率未下降（`go test -race -cover ./...`）
+- [ ] 无硬编码凭证
+- [ ] 错误处理完整（无被忽略的 error）
+- [ ] Context 正确传播
+- [ ] 依赖漏洞扫描通过（`govulncheck ./...`，安全相关变更时）
+
+**应查项（Should）**
+- [ ] 命名清晰，遵循 Go 惯用法
+- [ ] 新增公开 API 有文档注释
+- [ ] 日志和 Trace 覆盖关键路径
+- [ ] 无不必要的内存分配
+
+**可查项（Nice to Have）**
+- [ ] 测试用例涵盖边界条件
+- [ ] 性能敏感路径有 benchmark（`for b.Loop()`）
+- [ ] 代码复杂度合理（无过长函数）
+
 ### 第 4 步：风险裁决
 
 对第 2 步和第 3 步的所有发现，参照 `references/judgment-matrix.md` 进行风险等级标注：

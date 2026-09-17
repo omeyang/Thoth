@@ -1,27 +1,28 @@
 # skills
 
-用于代理编码工作流的可复用技能包。
+Thoth 插件的技能。完整列表见 [CATALOG.md](CATALOG.md)（由 `scripts/gen-catalog.sh` 生成）。
 
-## 使用方式
-
-- 完整列表见 [CATALOG.md](CATALOG.md)。
-- 技能包以软链接方式接入 Claude Code：`ln -sfn "$PWD/skills/<name>" ~/.claude/skills/<name>`，仓库更新后无需重装。
-- 跨项目图表附件交付使用 [diagram-png-export](diagram-png-export/README.md)，默认生成白底、4 倍分辨率、完整无裁切的 PNG；Codex 通过 `~/.codex/skills/diagram-png-export` 软链接共用同一份。
-
-## 建议的模块结构
+## 结构
 
 ```text
-skills/<skill-name>/
-├── SKILL.md
-├── scripts/
-├── assets/
-└── references/
+skills/<name>/
+├── SKILL.md          # 必需，≤ 500 行：决策、要点、检查清单
+└── references/       # 完整代码示例与长篇资料，按需读取
+```
+
+## frontmatter
+
+```yaml
+---
+name: kafka-go                       # 与目录名一致
+description: "<能力>. 适用：<场景>. 不适用：<反模式>. 触发词：<关键词>"   # ≤ 1024 字符
+argument-hint: "<可选>"
+---
 ```
 
 ## 规则
 
-- 每个目录一个技能包。
-- `SKILL.md` 为必需文件。
-- 仅包含工作流所需的引用。
-- 保持前置字段（`name`、`description`、`user-invocable`）一致。
-- 新增或删除技能包时同步更新 `CATALOG.md` 的总数与表格。
+- 单一基线 go1.24.6；库版本在技能正文写明，取该工具链可用的最新版。
+- 示例只用上游库，不引用私有库。
+- 中文正文，英文标识符。
+- 新增或删除技能后运行 `scripts/gen-catalog.sh`，并通过 `scripts/validate.sh`。

@@ -1,13 +1,14 @@
 ---
 name: api-design-go
 description: "Go API 设计专家 - RESTful 规范、版本控制、分页策略、错误处理、HATEOAS、契约优先、内容协商。适用：HTTP API 设计、微服务接口、公开 API、RESTful 端点、分页实现、错误响应标准化。不适用：gRPC/Protobuf 接口设计（应使用 grpc-go 专家）、GraphQL API、内部 RPC 通信（无需 REST 规范）。触发词：API, REST, RESTful, HTTP, endpoint, pagination, cursor, HATEOAS, RFC 7807, versioning, rate limit, 接口设计, 分页, 错误处理"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # Go API 设计专家
 
 使用 Go 设计高质量 HTTP API：$ARGUMENTS
+
+基线：go1.24.6。路由用标准库 `http.ServeMux`（`"GET /api/v1/users/{id}"` + `r.PathValue("id")`），
+请求校验用 `github.com/go-playground/validator/v10 v10.30.1`（更高版本要求更新的 Go 工具链）。
 
 ---
 
@@ -51,7 +52,7 @@ POST   /orders/batch
 
 ## 2. 版本控制
 
-- **URL 路径版本（推荐）**：`/api/v1/users`，路由注册 `r.PathPrefix("/api/v1").Subrouter()`
+- **URL 路径版本（推荐）**：`/api/v1/users`，`mux.HandleFunc("GET /api/v1/users", v1ListUsers)`，或按版本建子 mux 再 `mux.Handle("/api/v1/", http.StripPrefix("/api/v1", v1))`
 - **Header 版本**：`API-Version` / `Accept-Version` header + 中间件注入 context
 - **版本弃用**：设置 `Deprecation: true` + `Sunset` + `Link: successor-version` 响应头
 
@@ -83,7 +84,7 @@ POST   /orders/batch
 
 ## 4. 错误处理
 
-- **RFC 7807 Problem Details**：Type + Title + Status + Detail + Instance + Errors + TraceID
+- **RFC 9457 Problem Details**（取代 RFC 7807，格式兼容）：Type + Title + Status + Detail + Instance + Errors + TraceID，`Content-Type: application/problem+json`
 - **FieldError** 结构：Field + Message + Code
 - **ErrorHandler** 根据 `errors.Is`/`errors.As` 映射到对应 HTTP 状态码
 - 内部错误不暴露详情，返回 500 + 日志记录
@@ -131,7 +132,7 @@ POST   /orders/batch
 - 限制 `page_size` 上限
 
 ### 错误处理
-- 遵循 RFC 7807
+- 遵循 RFC 9457（原 RFC 7807）
 - 包含 trace_id
 - 字段错误返回具体位置
 
@@ -151,3 +152,4 @@ POST   /orders/batch
 ## 参考资料
 
 - [完整代码实现](references/examples.md) - 版本控制、分页、错误处理、HATEOAS、内容协商的完整 Go 实现
+- [RFC 9457 Problem Details](https://www.rfc-editor.org/rfc/rfc9457) · [net/http ServeMux 模式](https://pkg.go.dev/net/http#ServeMux) · [validator/v10](https://pkg.go.dev/github.com/go-playground/validator/v10)

@@ -1,8 +1,6 @@
 ---
 name: otel-go
-description: "Go OpenTelemetry 可观测性专家 - 分布式追踪、指标收集、日志关联、上下文传播、采样策略、Baggage 传递。适用：微服务链路追踪、APM 监控、多信号（traces/metrics/logs）统一采集、vendor-neutral 遥测方案、gRPC/HTTP 自动 instrumentation。不适用：单体应用仅需简单日志排障、性能极敏感热路径（SDK 有微量开销）、已深度绑定特定 APM 厂商 SDK 且无迁移计划。触发词：opentelemetry, otel, tracing, span, metric, 可观测性, 链路追踪, 指标, 采样, propagation, baggage, jaeger, tempo, otlp"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+description: "Go OpenTelemetry 可观测性专家 - 使用 otel SDK 直接实现分布式追踪、指标收集、日志关联（otelslog Bridge + slog trace_id 注入）、上下文传播（otelhttp/otelgrpc/手动 propagator）、采样策略（ParentBased/TraceIDRatio/自定义与组合采样器）、Baggage 传递。适用：微服务链路追踪、APM 监控、多信号（traces/metrics/logs）统一采集、vendor-neutral 遥测方案、gRPC/HTTP 自动 instrumentation。不适用：单体应用仅需简单日志排障、性能极敏感热路径（SDK 有微量开销）、已深度绑定特定 APM 厂商 SDK 且无迁移计划。触发词：opentelemetry, otel, tracing, span, metric, 可观测性, 链路追踪, 指标, 采样, propagation, baggage, jaeger, tempo, otlp, otelslog, semconv"
 ---
 
 # Go OpenTelemetry 专家
@@ -11,407 +9,428 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 
 ---
 
-## 1. Observer 抽象模式
+## 0. 版本与依赖
 
-XKit 使用 `xmetrics.Observer` 统一观测接口，底层可切换 OTel 或 NoOp 实现。
+基线 go1.24.6。go.mod：
 
-### 核心接口
-
-```go
-// Observer - 统一观测接口
-type Observer interface {
-    Start(ctx context.Context, opts SpanOptions) (context.Context, Span)
-}
-
-// Span - 观测区间
-type Span interface {
-    End(result Result)
-}
-
-// SpanOptions - 观测配置
-type SpanOptions struct {
-    Component string   // 组件名 (如 "user-service")
-    Operation string   // 操作名 (如 "GetUser")
-    Kind      Kind     // Internal/Server/Client/Producer/Consumer
-    Attrs     []Attr   // 自定义属性
-}
-
-// Result - 操作结果
-type Result struct {
-    Status Status  // StatusOK 或 StatusError（未设置时从 Err 推导）
-    Err    error
-    Attrs  []Attr  // 结果属性
-}
+```text
+go.opentelemetry.io/otel v1.41.0                 // otel、metric、trace、sdk、sdk/metric、semconv/v1.37.0
+go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.41.0
+go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.41.0
+go.opentelemetry.io/otel/log v0.17.0             // Logs API 仍为 beta，全局入口 otel/log/global
+go.opentelemetry.io/otel/sdk/log v0.17.0
+go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.17.0
+go.opentelemetry.io/contrib/bridges/otelslog v0.16.0
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.66.0
+go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.66.0
 ```
 
-### 使用示例
-
-```go
-ctx, span := observer.Start(ctx, xmetrics.SpanOptions{
-    Component: "order-service",
-    Operation: "CreateOrder",
-    Kind:      xmetrics.KindServer,
-    Attrs: []xmetrics.Attr{xmetrics.String("order.id", orderID)},
-})
-defer span.End(xmetrics.Result{Err: err})
-```
-
-### NoOp 实现（用于测试或禁用观测）
-
-```go
-type NoopObserver struct{}
-func (NoopObserver) Start(ctx context.Context, _ SpanOptions) (context.Context, Span) {
-    return ctx, NoopSpan{}
-}
-
-// 安全的 nil 检查辅助函数
-func Start(ctx context.Context, observer Observer, opts SpanOptions) (context.Context, Span) {
-    if observer == nil { return ctx, NoopSpan{} }
-    return observer.Start(ctx, opts)
-}
-```
+原则：业务代码直接使用 `otel.Tracer` / `otel.Meter` / `slog`，不引入额外抽象层；
+测试或禁用观测时不设置全局 Provider，默认即为 no-op。
 
 ---
 
-## 2. OTel Observer 实现
-
-### 初始化
+## 1. SDK 初始化
 
 ```go
-// 默认使用全局 OTel Provider
-observer, err := xmetrics.NewOTelObserver()
+package otelx
 
-// 自定义 Provider
-observer, err := xmetrics.NewOTelObserver(
-    xmetrics.WithInstrumentationName("my-service"),
-    xmetrics.WithTracerProvider(tp),
-    xmetrics.WithMeterProvider(mp),
+import (
+    "context"
+    "errors"
+
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/log/global"
+    "go.opentelemetry.io/otel/propagation"
+    "go.opentelemetry.io/otel/sdk/resource"
+    semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 )
-```
 
-### 自动记录的标准指标
+type Config struct {
+    ServiceName, ServiceVersion, Environment string
+    OTLPEndpoint                             string  // "otel-collector:4317"
+    SampleRatio                              float64 // 根 span 采样比例
+    Insecure                                 bool
+}
 
-| 指标名 | 类型 | 说明 |
-|--------|------|------|
-| `xkit.operation.total` | Counter | 操作总数（按 component/operation/status 分组） |
-| `xkit.operation.duration` | Histogram | 操作耗时（秒） |
-
-### Span 结束时自动行为
-
-```go
-func (s *otelSpan) End(result Result) {
-    s.endOnce.Do(func() {  // 幂等 - 多次调用只记录一次
-        if result.Err != nil {
-            s.span.RecordError(result.Err)
-            s.span.SetStatus(codes.Error, result.Err.Error())
+func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error, err error) {
+    var fns []func(context.Context) error
+    shutdown = func(ctx context.Context) error {
+        var errs error
+        for i := len(fns) - 1; i >= 0; i-- {
+            errs = errors.Join(errs, fns[i](ctx))
         }
-        // 使用 context.WithoutCancel 确保超时/取消场景下指标也能记录
-        metricsCtx := context.WithoutCancel(s.ctx)
-        s.observer.total.Add(metricsCtx, 1, ...)
-        s.observer.duration.Record(metricsCtx, elapsed, ...)
-    })
-}
-```
+        return errs
+    }
 
-### 双向同步（OTel Span ↔ xctx）
-
-```go
-// OTel span 创建后，自动同步到 xctx
-func syncXctx(ctx context.Context, sc trace.SpanContext) context.Context {
-    ctx, _ = xctx.WithTraceID(ctx, sc.TraceID().String())
-    ctx, _ = xctx.WithSpanID(ctx, sc.SpanID().String())
-    ctx, _ = xctx.WithTraceFlags(ctx, fmt.Sprintf("%02x", sc.TraceFlags()))
-    return ctx
-}
-```
-
-> 完整 OTel Observer 实现见 [references/examples.md](references/examples.md#1-sdk-初始化)
-
----
-
-## 3. OTel SDK 初始化
-
-### 完整初始化模板
-
-```go
-func InitOTel(ctx context.Context, cfg OTelConfig) (shutdown func(context.Context) error, err error) {
+    // resource.New 合并探测器结果，避免 resource.Merge 的 schema URL 冲突
     res, err := resource.New(ctx,
+        resource.WithFromEnv(), resource.WithTelemetrySDK(), resource.WithHost(),
         resource.WithAttributes(
-            semconv.ServiceNameKey.String(cfg.ServiceName),
-            semconv.ServiceVersionKey.String(cfg.Version),
-            attribute.String("environment", cfg.Environment),
+            semconv.ServiceName(cfg.ServiceName),
+            semconv.ServiceVersion(cfg.ServiceVersion),
+            semconv.DeploymentEnvironmentName(cfg.Environment),
         ),
     )
-    // 创建 TracerProvider + MeterProvider + LoggerProvider
-    // 设置 Propagator（TraceContext + Baggage）
-    // 返回统一 shutdown 函数
+    if err != nil {
+        return shutdown, err
+    }
+
+    tp, err := newTracerProvider(ctx, res, cfg)
+    if err != nil {
+        return shutdown, err
+    }
+    fns = append(fns, tp.Shutdown)
+    otel.SetTracerProvider(tp)
+
+    mp, err := newMeterProvider(ctx, res, cfg)
+    if err != nil {
+        return shutdown, err
+    }
+    fns = append(fns, mp.Shutdown)
+    otel.SetMeterProvider(mp)
+
+    lp, err := newLoggerProvider(ctx, res, cfg)
+    if err != nil {
+        return shutdown, err
+    }
+    fns = append(fns, lp.Shutdown)
+    global.SetLoggerProvider(lp) // Logs API beta：全局入口在 otel/log/global，不在 otel 包
+
+    otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+        propagation.TraceContext{}, propagation.Baggage{},
+    ))
+    return shutdown, nil
 }
 ```
 
-### Provider 创建
+Provider 构造要点：
 
-```go
-func newTracerProvider(ctx context.Context, res *resource.Resource, endpoint string) (*trace.TracerProvider, error)
-func newMeterProvider(ctx context.Context, res *resource.Resource, endpoint string) (*metric.MeterProvider, error)
-func newLoggerProvider(ctx context.Context, res *resource.Resource, endpoint string) (*log.LoggerProvider, error)
-```
+| Provider | Exporter | 关键选项 |
+|----------|----------|----------|
+| `sdktrace.NewTracerProvider` | `otlptracegrpc.New` | `WithBatcher(exp, WithBatchTimeout(5s), WithMaxExportBatchSize(512))`、`WithSampler(ParentBased(TraceIDRatioBased(r)))` |
+| `sdkmetric.NewMeterProvider` | `otlpmetricgrpc.New` | `WithReader(NewPeriodicReader(exp, WithInterval(30s)))` |
+| `sdklog.NewLoggerProvider` | `otlploggrpc.New` | `WithProcessor(NewBatchProcessor(exp))` |
+
+main 中 `defer shutdown(ctx)`（带 10s 超时）确保缓冲数据导出。
+
+> 完整初始化见 [references/examples.md](references/examples.md#1-sdk-初始化)
 
 ---
 
-## 4. 分布式追踪
-
-### 直接使用 OTel API 创建 Span
+## 2. 分布式追踪
 
 ```go
-tracer := otel.Tracer("order-service")
-ctx, span := tracer.Start(ctx, "ProcessOrder",
-    trace.WithAttributes(attribute.String("order.id", orderID)),
-    trace.WithSpanKind(trace.SpanKindInternal),
+package otelx
+
+import (
+    "context"
+
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/codes"
+    "go.opentelemetry.io/otel/trace"
 )
-defer span.End()
+
+var tracer = otel.Tracer("github.com/example/order-service/order") // 包级创建一次
+
+func ProcessOrder(ctx context.Context, orderID string, do func(context.Context) error) error {
+    ctx, span := tracer.Start(ctx, "ProcessOrder",
+        trace.WithSpanKind(trace.SpanKindInternal),
+        trace.WithAttributes(attribute.String("order.id", orderID)),
+    )
+    defer span.End()
+
+    if err := do(ctx); err != nil { // 子调用传 ctx，自动成为子 span
+        span.RecordError(err)
+        span.SetStatus(codes.Error, err.Error())
+        return err
+    }
+    span.SetStatus(codes.Ok, "")
+    return nil
+}
 ```
 
-- `span.AddEvent()` 添加事件
-- `span.RecordError()` 记录错误
-- `span.SetStatus(codes.Error, msg)` 设置状态
+- `span.AddEvent()` 记录事件；`span.RecordError()` + `SetStatus(codes.Error)` 记录失败
+- SpanKind：入站 `Server` / `Consumer`，出站 `Client` / `Producer`，其余 `Internal`
+- 异步任务用 `trace.WithNewRoot()` + `trace.WithLinks(trace.LinkFromContext(ctx))`，不阻塞父 span
 
-### Span 属性规范（semconv）
+### Span 属性规范（semconv v1.37.0）
 
-- **HTTP**: `HTTPRequestMethodKey`, `HTTPResponseStatusCode`, `URLFull`, `HTTPRoute`
-- **DB**: `DBSystemKey`, `DBNamespace`, `DBOperationName`
-- **消息队列**: `MessagingSystem`, `MessagingDestinationName`
+| 领域 | 常量 / 函数 |
+|------|------------|
+| HTTP | `HTTPRequestMethodGet`、`HTTPResponseStatusCode(n)`、`URLFull(s)`、`HTTPRoute(s)` |
+| DB | `DBSystemNameMongoDB`、`DBNamespace(s)`、`DBOperationName(s)`、`DBCollectionName(s)` |
+| 消息 | `MessagingSystemKafka`、`MessagingDestinationName(s)`、`MessagingOperationTypeSend` |
 
 > 完整追踪示例见 [references/examples.md](references/examples.md#2-分布式追踪)
 
 ---
 
-## 5. 指标收集
+## 3. 指标收集
 
-### 指标类型
+```go
+package otelx
+
+import (
+    "context"
+    "time"
+
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/attribute"
+    "go.opentelemetry.io/otel/metric"
+)
+
+var meter = otel.Meter("github.com/example/order-service/order")
+
+type Metrics struct {
+    total    metric.Int64Counter
+    duration metric.Float64Histogram
+}
+
+func NewMetrics() (*Metrics, error) {
+    total, err := meter.Int64Counter("orders.total", metric.WithUnit("{order}"))
+    if err != nil {
+        return nil, err
+    }
+    duration, err := meter.Float64Histogram("orders.duration", metric.WithUnit("s"),
+        metric.WithExplicitBucketBoundaries(0.005, 0.01, 0.05, 0.1, 0.5, 1, 5))
+    if err != nil {
+        return nil, err
+    }
+    return &Metrics{total: total, duration: duration}, nil
+}
+
+func (m *Metrics) Record(ctx context.Context, start time.Time, orderType string, err error) {
+    status := "ok"
+    if err != nil {
+        status = "error"
+    }
+    attrs := metric.WithAttributeSet(attribute.NewSet( // 预构造属性集，减少分配
+        attribute.String("order.type", orderType), attribute.String("status", status)))
+    mctx := context.WithoutCancel(ctx) // ctx 已取消时仍记录
+    m.total.Add(mctx, 1, attrs)
+    m.duration.Record(mctx, time.Since(start).Seconds(), attrs)
+}
+```
 
 | 类型 | 函数 | 用途 |
 |------|------|------|
 | Counter | `meter.Int64Counter()` | 只增计数（请求总数） |
-| Histogram | `meter.Float64Histogram()` | 分布（延迟） |
+| Histogram | `meter.Float64Histogram()` | 分布（延迟，单位 s） |
 | UpDownCounter | `meter.Int64UpDownCounter()` | 可增减（活跃连接） |
-| ObservableGauge | `meter.Int64ObservableGauge()` | 异步当前值（缓存大小） |
+| Gauge | `meter.Float64Gauge()` | 同步当前值 |
+| ObservableGauge / Counter | `meter.Int64ObservableGauge()` + `RegisterCallback` | 采集时回调读取（缓存大小） |
 
-> 完整指标实现见 [references/examples.md](references/examples.md#3-指标收集)
+属性必须低基数：不要把 user_id、URL 全路径放进指标属性。
+
+> 完整指标与"Span + 指标一体"的 `Instrument` 辅助见 [references/examples.md](references/examples.md#3-指标收集)
 
 ---
 
-## 6. 日志关联（xlog + EnrichHandler）
+## 4. 日志关联
 
-### xlog Builder 模式
+两条路径按需组合：
 
-```go
-logger, cleanup, err := xlog.New().
-    SetOutput(os.Stdout).
-    SetLevel(xlog.LevelInfo).
-    SetFormat("json").           // "text" 或 "json"
-    SetAddSource(true).          // 包含源码位置
-    SetEnrich(true).             // 自动注入 trace/identity 信息
-    Build()
-defer cleanup()
-```
-
-### EnrichHandler 自动注入
-
-当 `SetEnrich(true)` 时，日志自动从 context 注入：
+| 路径 | 实现 | 效果 |
+|------|------|------|
+| 日志导出到 OTLP | `otelslog.NewHandler(name, otelslog.WithLoggerProvider(global.GetLoggerProvider()))` | LogRecord 自动携带 trace_id / span_id，与 trace 在后端关联 |
+| 本地 JSON 日志 | 自定义 `slog.Handler` 从 `trace.SpanContextFromContext(ctx)` 注入字段 | stdout / 文件日志可按 trace_id 检索 |
 
 ```go
-// EnrichHandler 在每条日志中自动添加：
-// trace_id, span_id, request_id, trace_flags  (来自 xctx.AppendTraceAttrs)
-// platform_id, tenant_id, tenant_name         (来自 xctx.AppendIdentityAttrs)
+package otelx
 
-logger.Info(ctx, "processing order", slog.String("order_id", orderID))
-// 输出: {"msg":"processing order","order_id":"123","trace_id":"abc","tenant_id":"t1",...}
-```
+import (
+    "context"
+    "log/slog"
 
-### EnrichHandler 实现原理
+    "go.opentelemetry.io/otel/trace"
+)
 
-```go
-func (h *EnrichHandler) Handle(ctx context.Context, r slog.Record) error {
-    var buf [6]slog.Attr  // 栈分配，零 GC 开销
-    attrs := buf[:0]
-    attrs = xctx.AppendTraceAttrs(attrs, ctx)     // 只追加非空字段
-    attrs = xctx.AppendIdentityAttrs(attrs, ctx)
-    if len(attrs) > 0 {
+// TraceHandler 包装任意 slog.Handler，追加 trace_id / span_id。
+type TraceHandler struct{ slog.Handler }
+
+func (h *TraceHandler) Handle(ctx context.Context, r slog.Record) error {
+    if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
         r = r.Clone()
-        r.AddAttrs(attrs...)
+        r.AddAttrs(
+            slog.String("trace_id", sc.TraceID().String()),
+            slog.String("span_id", sc.SpanID().String()),
+        )
     }
-    return h.base.Handle(ctx, r)
+    return h.Handler.Handle(ctx, r)
 }
+
+func (h *TraceHandler) WithAttrs(a []slog.Attr) slog.Handler { return &TraceHandler{h.Handler.WithAttrs(a)} }
+func (h *TraceHandler) WithGroup(n string) slog.Handler     { return &TraceHandler{h.Handler.WithGroup(n)} }
 ```
 
-### Logger 接口
+- 日志调用始终用 `logger.InfoContext(ctx, ...)`，无 ctx 拿不到 span
+- 运行时调级用 `slog.LevelVar`
+- 双路输出（stdout + OTLP）用 fan-out handler
 
-```go
-type Logger interface {
-    Debug(ctx context.Context, msg string, attrs ...slog.Attr)
-    Info(ctx context.Context, msg string, attrs ...slog.Attr)
-    Warn(ctx context.Context, msg string, attrs ...slog.Attr)
-    Error(ctx context.Context, msg string, attrs ...slog.Attr)
-    Stack(ctx context.Context, msg string, attrs ...slog.Attr)  // 含完整堆栈
-    With(attrs ...slog.Attr) Logger
-    WithGroup(name string) Logger
-}
-
-type Leveler interface {
-    SetLevel(level Level)  // 运行时动态调整日志级别
-    GetLevel() Level
-}
-```
+> otelslog、双路输出、动态调级见 [references/examples.md](references/examples.md#5-日志关联)
 
 ---
 
-## 7. 上下文传播
+## 5. 上下文传播
 
 ### 自动 Instrumentation
 
-| 组件 | 包 | 用法 |
-|------|-----|------|
-| HTTP 客户端 | `otelhttp.NewTransport()` | 自动注入 trace headers |
-| HTTP 服务端 | `otelhttp.NewHandler()` | 自动提取 trace headers |
-| gRPC 客户端 | `otelgrpc.NewClientHandler()` | `grpc.WithStatsHandler()` |
-| gRPC 服务端 | `otelgrpc.NewServerHandler()` | `grpc.StatsHandler()` |
-
-### XKit Trace 传播（xtrace）
-
-```go
-// HTTP 中间件自动提取
-xtrace.HTTPMiddleware()  // 提取 X-Trace-ID, traceparent 等
-
-// gRPC 拦截器自动提取
-xtrace.GRPCUnaryServerInterceptor()  // 提取 metadata 中的 trace 信息
-
-// 支持 W3C Trace Context: 00-{trace-id}-{parent-id}-{trace-flags}
-```
+| 组件 | 用法 | 说明 |
+|------|------|------|
+| HTTP 客户端 | `&http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}` | 注入 traceparent / baggage |
+| HTTP 服务端 | `otelhttp.NewHandler(mux, "http.server", otelhttp.WithSpanNameFormatter(...))` | span 名用 `r.Pattern`，避免高基数 |
+| gRPC 客户端 | `grpc.WithStatsHandler(otelgrpc.NewClientHandler())` | 拦截器方式已废弃 |
+| gRPC 服务端 | `grpc.StatsHandler(otelgrpc.NewServerHandler())` | `otelgrpc.WithFilter` 排除健康检查 |
 
 ### 手动传播
 
 ```go
-otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
-otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(req.Header))
-```
+package otelx
 
----
+import (
+    "context"
+    "net/http"
 
-## 8. 采样策略（xsampling）
-
-### 内置采样器
-
-```go
-// 基础
-xsampling.Always()                      // 全部采样
-xsampling.Never()                       // 不采样
-xsampling.NewRateSampler(0.1)          // 10% 比例采样
-xsampling.NewCountSampler(100)         // 每 100 个采样一个
-xsampling.NewProbabilitySampler(0.5)   // 50% 概率采样
-```
-
-### KeyBasedSampler（跨进程一致采样）
-
-```go
-// 相同 trace_id 在所有服务中做出相同采样决策
-sampler := xsampling.NewKeyBasedSampler(0.1, func(ctx context.Context) string {
-    return xctx.TraceID(ctx)  // 使用 xxhash 确定性哈希
-})
-```
-
-### CompositeSampler（组合采样器）
-
-```go
-// AND：所有条件都满足
-sampler := xsampling.All(
-    xsampling.NewRateSampler(0.1),
-    xsampling.NewKeyBasedSampler(0.5, keyFunc),
+    "go.opentelemetry.io/otel"
+    "go.opentelemetry.io/otel/propagation"
 )
 
-// OR：任一条件满足
-sampler := xsampling.Any(
-    xsampling.NewRateSampler(0.01),
-    debugModeSampler,
+func Inject(ctx context.Context, req *http.Request) {
+    otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+}
+
+func Extract(ctx context.Context, req *http.Request) context.Context {
+    return otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(req.Header))
+}
+
+// 消息队列 headers / properties 用 MapCarrier
+func InjectMap(ctx context.Context, m map[string]string) {
+    otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(m))
+}
+```
+
+W3C Trace Context 格式：`traceparent: 00-{trace-id}-{parent-id}-{flags}`，`tracestate` 承载厂商数据。
+
+> 完整传播示例见 [references/examples.md](references/examples.md#6-上下文传播)
+
+---
+
+## 6. 采样策略
+
+```go
+package otelx
+
+import sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+func productionSampler(ratio float64) sdktrace.Sampler {
+    // 尊重上游决策；根 span 按 trace ID 哈希比例采样（跨服务一致）
+    return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
+}
+```
+
+| 采样器 | 说明 |
+|--------|------|
+| `AlwaysSample()` / `NeverSample()` | 开发 / 关闭 |
+| `TraceIDRatioBased(r)` | 按 trace ID 确定性哈希，同一 trace 各服务决策一致 |
+| `ParentBased(root, opts...)` | 推荐：有父 span 时跟随父决策，根 span 用 `root` |
+| 自定义 `sdktrace.Sampler` | 实现 `ShouldSample(SamplingParameters)` + `Description()` |
+
+自定义采样器只能依据 span **起始**属性（route、method）；错误 / 慢请求全采属于尾采样，
+在 Collector 用 `tailsampling` processor 实现。按 tenant 等业务 key 一致采样：key 放入 Baggage，
+采样器读取后哈希。组合采样（AND / OR）自行实现 `Sampler` 包装。
+
+> 自定义、组合、Baggage key 采样器见 [references/examples.md](references/examples.md#7-采样策略)
+
+---
+
+## 7. Baggage 传递业务数据
+
+```go
+package otelx
+
+import (
+    "context"
+
+    "go.opentelemetry.io/otel/baggage"
 )
+
+func WithTenantID(ctx context.Context, tenantID string) (context.Context, error) {
+    member, err := baggage.NewMember("tenant_id", tenantID)
+    if err != nil {
+        return ctx, err
+    }
+    bag, err := baggage.FromContext(ctx).SetMember(member) // 保留已有成员
+    if err != nil {
+        return ctx, err
+    }
+    return baggage.ContextWithBaggage(ctx, bag), nil
+}
+
+func TenantIDFromBaggage(ctx context.Context) string {
+    return baggage.FromContext(ctx).Member("tenant_id").Value()
+}
 ```
 
-### OTel 内置采样器
-
-```go
-trace.AlwaysSample()
-trace.NeverSample()
-trace.TraceIDRatioBased(0.1)
-trace.ParentBased(trace.TraceIDRatioBased(0.1))  // 推荐
-```
+- Baggage 明文随请求头传播，只放低基数、非敏感值
+- Baggage 不自动成为 span 属性，需要检索时显式 `span.SetAttributes`
 
 ---
 
-## 9. Baggage 传递业务数据
+## 8. 健康检查过滤
 
-```go
-member, _ := baggage.NewMember("tenant_id", tenantID)
-bag, _ := baggage.New(member)
-ctx = baggage.ContextWithBaggage(ctx, bag)
+- Instrumentation 层：`otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/healthz" })`，不创建 span 也不记指标
+- gRPC：`otelgrpc.WithFilter(func(info *stats.RPCTagInfo) bool { ... })` 排除 `grpc.health.v1.Health/Check`
+- 采样器层：按 `http.route` 属性 Drop，span 仍创建但不导出
 
-// 读取
-bag := baggage.FromContext(ctx)
-tenantID := bag.Member("tenant_id").Value()
-```
-
----
-
-## 10. 属性辅助函数
-
-```go
-// xmetrics 类型安全属性构造
-xmetrics.String(key, value string) Attr
-xmetrics.Int(key string, value int) Attr
-xmetrics.Int64(key string, value int64) Attr
-xmetrics.Float64(key string, value float64) Attr
-xmetrics.Bool(key string, value bool) Attr
-xmetrics.Duration(key string, value time.Duration) Attr
-xmetrics.Any(key string, value any) Attr
-```
+> 完整实现见 [references/examples.md](references/examples.md#8-健康检查过滤)
 
 ---
 
 ## 最佳实践
 
 ### 初始化
-- 在 main() 开头初始化 OTel SDK
-- 使用 `defer shutdown(ctx)` 确保数据导出
-- 统一配置 Resource 属性（service.name, environment）
+- `main()` 开头 `Init`，`defer shutdown(ctx)` 带超时
+- Resource 用 `resource.New` + `WithFromEnv`，支持 `OTEL_SERVICE_NAME`、`OTEL_RESOURCE_ATTRIBUTES` 覆盖
+- Provider 通过 `otel.SetTracerProvider` 等设为全局，业务代码用 `otel.Tracer(name)` 获取
 
-### Observer 模式
-- 业务代码使用 `xmetrics.Observer` 而非直接 OTel API
-- 测试时传入 `NoopObserver` 禁用观测开销
-- `nil` observer 安全 — 使用 `xmetrics.Start()` 辅助函数
+### 追踪
+- instrumentation name 用模块路径，包级变量创建一次
+- 始终传递 ctx；HTTP / gRPC 用官方 instrumentation，不手写 span
+
+### 指标
+- 时长单位秒，名称遵循 semconv（`http.server.request.duration`）
+- 属性低基数；预构造 `attribute.NewSet` 减少分配
+- 记录时用 `context.WithoutCancel(ctx)`
 
 ### 日志
-- 使用 `SetEnrich(true)` 自动关联 trace
-- 日志格式生产用 `json`，开发用 `text`
-- 运行时可通过 `Leveler.SetLevel()` 动态调级
+- `otelslog` 导出 + 本地 `TraceHandler` 注入，两者互补
+- 生产 JSON、开发 text；`slog.LevelVar` 动态调级
 
 ### 采样
-- 生产环境使用 `ParentBased` 采样器
-- 跨服务一致采样使用 `KeyBasedSampler`（xxhash 确定性）
-- 控制 cardinality（属性值数量）
+- 生产 `ParentBased(TraceIDRatioBased)`；边缘服务决定采样率，内部服务跟随
+- 尾采样放 Collector
 
 ---
 
 ## 检查清单
 
-- [ ] 配置 Resource（service.name, environment）？
-- [ ] 设置合适的采样率？
-- [ ] HTTP/gRPC 使用自动 instrumentation？
-- [ ] 日志关联 Trace ID（EnrichHandler）？
-- [ ] 健康检查端点排除追踪？
-- [ ] 指标属性 cardinality 可控？
-- [ ] 优雅关闭 OTel Provider？
-- [ ] 业务代码使用 Observer 抽象？
+- [ ] Resource 配置 service.name / version / deployment.environment.name？
+- [ ] 采样率合理，ParentBased 跟随上游？
+- [ ] HTTP / gRPC 使用官方 instrumentation（stats handler）？
+- [ ] 日志经 otelslog 或 TraceHandler 关联 trace_id？
+- [ ] 健康检查端点排除？
+- [ ] 指标属性低基数、单位符合 semconv？
+- [ ] shutdown 带超时并在 main 退出前调用？
+- [ ] Logs API beta 版本与 SDK 版本匹配（v0.17.0 ↔ v1.41.0）？
 
 ---
 
 ## 参考资料
 
-- [完整代码示例](references/examples.md) — SDK 初始化、Observer、追踪、指标、日志、传播、采样完整实现
+- [references/examples.md](references/examples.md) — SDK 初始化、追踪、指标、日志、传播、采样、Baggage 完整实现
+- [opentelemetry-go 文档](https://pkg.go.dev/go.opentelemetry.io/otel)
+- [opentelemetry-go-contrib 文档](https://pkg.go.dev/go.opentelemetry.io/contrib)
+- [OpenTelemetry Go 官方指南](https://opentelemetry.io/docs/languages/go/)
+- [Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/)

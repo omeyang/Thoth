@@ -1,6 +1,6 @@
-# pprof / trace Cookbook（Go 1.25.9+）
+# pprof / trace Cookbook（基线 go1.24.6）
 
-从"发现慢 → 定位 → 验证"的完整流程。所有示例基于最新工具链。
+从"发现慢 → 定位 → 验证"的完整流程。所有示例基于 go1.24.6 工具链。
 
 ---
 
@@ -148,7 +148,7 @@ go tool pprof -http=:8080 heap.pb.gz
 - **goroutine 泄漏** → `/debug/pprof/goroutine` 数量单调上升
 - **map 单调增长** → 无淘汰策略，用 `weak.Pointer` 或 LRU
 - **channel 泄漏** → 发送方阻塞未退出
-- **timer/ticker 泄漏** → 未 Stop（Go 1.23 改进：未引用会被 GC，但仍建议显式 Stop）
+- **timer/ticker 泄漏** → 未 Stop（Go 1.23 起未引用的 timer 可被 GC，但循环里仍应显式 Stop）
 
 ---
 
@@ -209,20 +209,30 @@ go tool trace trace.out
 
 ---
 
-## 6. Flight Recorder（Go 1.25 新增）
+## 6. Flight Recorder（`golang.org/x/exp/trace`）
 
 **场景**：偶发性能问题（延迟毛刺、偶现错误），无法稳定触发 → 持续缓冲，事件来临时 dump 最近 N 秒。
 
-```go
-import "runtime/trace"
+Go 1.24 标准库 `runtime/trace` 没有飞行记录器，用 `golang.org/x/exp/trace` 包的 `FlightRecorder`（要求 Go 1.22 以上的 trace 格式）。`x/exp` 无兼容承诺，go.mod 里锁定版本。
 
-var flightRecorder *trace.FlightRecorder
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "time"
+
+    "golang.org/x/exp/trace"
+)
+
+var flightRecorder = trace.NewFlightRecorder()
 
 func initFlightRecorder() {
-    flightRecorder = trace.NewFlightRecorder(trace.FlightRecorderConfig{
-        MaxBytes: 16 << 20,  // 16 MiB 环形缓冲（典型 5-10 秒 trace）
-        MinAge:   5 * time.Second,
-    })
+    flightRecorder.SetPeriod(5 * time.Second) // 至少保留最近 5 s 的事件
+    flightRecorder.SetSize(16 << 20)          // 缓冲上限约 16 MiB
     if err := flightRecorder.Start(); err != nil {
         log.Printf("flight recorder start: %v", err)
     }
@@ -232,22 +242,34 @@ func initFlightRecorder() {
 func onAlert(reason string) {
     path := fmt.Sprintf("/tmp/flight-%s-%d.trace", reason, time.Now().UnixNano())
     f, err := os.Create(path)
-    if err != nil { return }
+    if err != nil {
+        log.Printf("create trace file: %v", err)
+        return
+    }
     defer f.Close()
     if _, err := flightRecorder.WriteTo(f); err != nil {
         log.Printf("dump trace: %v", err)
+        return
     }
     log.Printf("flight trace dumped to %s", path)
 }
 
 // HTTP 端点，手动 dump
-http.HandleFunc("/debug/flight-trace", func(w http.ResponseWriter, r *http.Request) {
-    w.Header().Set("Content-Type", "application/octet-stream")
-    _, _ = flightRecorder.WriteTo(w)
-})
+func registerFlightHandler(mux *http.ServeMux) {
+    mux.HandleFunc("/debug/flight-trace", func(w http.ResponseWriter, r *http.Request) {
+        if !flightRecorder.Enabled() {
+            http.Error(w, "flight recorder not running", http.StatusServiceUnavailable)
+            return
+        }
+        w.Header().Set("Content-Type", "application/octet-stream")
+        _, _ = flightRecorder.WriteTo(w)
+    })
+}
 ```
 
-**采样成本**：flight recorder 持续运行，开销低于 `runtime/trace.Start`，可在生产长时间开启。
+分析：`go tool trace flight-xxx.trace`。
+
+**采样成本**：flight recorder 持续运行，只保留环形窗口，开销低于常开 `runtime/trace.Start` 并写盘，可在生产长时间开启。`WriteTo` 期间会短暂加锁并复制缓冲，不要高频调用。
 
 **触发策略**：
 - HTTP 响应 p99 突增

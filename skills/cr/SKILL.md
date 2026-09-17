@@ -1,8 +1,7 @@
 ---
 name: cr
 description: "代码审查专家 - 三种模式：local（本地快速审查）、pr（PR 差异审查）、teams（多 Agent 对抗审查）。覆盖 Go/Python/Shell，A/B/C 优先级检查清单，风险矩阵驱动修复决策。适用：代码审查、PR Review、安全扫描、质量把关。不适用：纯格式化（用 formatter）、架构设计（用 design-patterns）。触发词：cr, code review, 代码审查, review, 审查, pr review"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Task
+argument-hint: "[local <path> | #<pr> | teams | diagnosis]"
 ---
 
 # 代码审查专家
@@ -34,6 +33,8 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Task
 **条件:** `$ARGUMENTS` 包含 `teams`、`对抗`、`adversarial`
 
 **动作:** 读取 `references/teams-review.md`，按 7 阶段对抗流程执行。
+
+CLI 驱动的四路对抗版本（Claude×2 + Codex×2，pre-commit 触发）见 `workflows/adversarial-review/`；本模式是会话内的 Agent 子代理版本。
 
 ### 4. 本地审查模式
 
@@ -78,7 +79,7 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Task
 
 ### 报告格式
 
-所有模式的输出报告遵循统一格式（兼容 `agents/code-reviewer/AGENT.md` 输出）：
+所有模式的输出报告遵循统一格式（兼容 `code-reviewer` 子代理输出）：
 
 ```markdown
 ## 审查摘要

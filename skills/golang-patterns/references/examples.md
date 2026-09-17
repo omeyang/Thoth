@@ -1,5 +1,7 @@
 # Go 惯用模式 - 完整代码示例
 
+基线：go1.24.6；`golang.org/x/sync v0.19.0`。
+
 ## 目录
 
 - [核心原则](#核心原则)
@@ -28,6 +30,7 @@
   - [预分配切片](#预分配切片)
   - [sync.Pool](#syncpool)
   - [避免循环中的字符串拼接](#避免循环中的字符串拼接)
+- [Go 1.24 惯用法](#go-124-惯用法)
 - [反模式避免](#反模式避免)
 
 ---
@@ -190,7 +193,7 @@ _ = writer.Close() // 尽力清理，错误在别处记录
 func WorkerPool(jobs <-chan Job, results chan<- Result, numWorkers int) {
     var wg sync.WaitGroup
 
-    for i := 0; i < numWorkers; i++ {
+    for range numWorkers {
         wg.Add(1)
         go func() {
             defer wg.Done()
@@ -212,7 +215,7 @@ func FetchWithTimeout(ctx context.Context, url string) ([]byte, error) {
     ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
     defer cancel()
 
-    req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+    req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
     if err != nil {
         return nil, fmt.Errorf("create request: %w", err)
     }
@@ -258,8 +261,7 @@ func FetchAll(ctx context.Context, urls []string) ([][]byte, error) {
     results := make([][]byte, len(urls))
 
     for i, url := range urls {
-        i, url := i, url // 捕获循环变量
-        g.Go(func() error {
+        g.Go(func() error { // 循环变量每轮独立，无需再复制 i, url
             data, err := FetchWithTimeout(ctx, url)
             if err != nil {
                 return err
@@ -478,7 +480,7 @@ func processItems(items []Item) []Result {
 
 ```go
 var bufferPool = sync.Pool{
-    New: func() interface{} {
+    New: func() any {
         return new(bytes.Buffer)
     },
 }
@@ -492,7 +494,7 @@ func ProcessRequest(data []byte) []byte {
 
     buf.Write(data)
     // 处理...
-    return buf.Bytes()
+    return bytes.Clone(buf.Bytes()) // 必须复制：buf 归还后会被复用
 }
 ```
 
@@ -523,6 +525,55 @@ func join(parts []string) string {
 // 最佳：使用标准库
 func join(parts []string) string {
     return strings.Join(parts, ",")
+}
+```
+
+---
+
+## Go 1.24 惯用法
+
+```go
+import (
+    "iter"
+    "maps"
+    "math/rand/v2"
+    "slices"
+    "strings"
+)
+
+// 整数 range 与 slices 包
+func topN(scores []int, n int) []int {
+    sorted := slices.Clone(scores)
+    slices.Sort(sorted)
+    slices.Reverse(sorted)
+    return sorted[:min(n, len(sorted))]
+}
+
+// 对外暴露迭代器而非切片
+type Registry struct{ items map[string]int }
+
+func (r *Registry) Names() iter.Seq[string] {
+    return maps.Keys(r.items)
+}
+
+func (r *Registry) Sorted() []string {
+    return slices.Sorted(r.Names())
+}
+
+// 惰性按行处理，不一次性分配全部切片
+func countNonEmpty(text string) int {
+    n := 0
+    for line := range strings.Lines(text) {
+        if strings.TrimSpace(line) != "" {
+            n++
+        }
+    }
+    return n
+}
+
+// math/rand/v2 自动播种
+func pick[T any](items []T) T {
+    return items[rand.IntN(len(items))]
 }
 ```
 

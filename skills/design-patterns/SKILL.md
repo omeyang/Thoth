@@ -1,13 +1,14 @@
 ---
 name: design-patterns
 description: "设计模式与架构专家 - 覆盖 GoF 经典模式(创建型/结构型/行为型)、云架构模式(熔断/Saga/CQRS/事件溯源)、Go 并发模式(Pipeline/Fan-Out/Worker Pool)、SOLID/Clean Architecture、ADR 架构决策记录。适用：系统设计、代码重构、架构决策、分布式系统设计、微服务拆分。不适用：纯业务逻辑实现(无架构决策)、简单 CRUD 无需模式、性能调优(应使用 go-test 基准测试)。触发词：设计模式, design pattern, 架构, architecture, SOLID, 重构, refactor, 工厂, 单例, 策略, 观察者, 熔断, saga, CQRS, 中间件, middleware"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # 设计模式与架构专家
 
 使用设计模式解决：$ARGUMENTS
+
+基线：go1.24.6。示例依赖：`github.com/sony/gobreaker/v2 v2.4.0`、`github.com/avast/retry-go/v5 v5.0.0`、
+`golang.org/x/time v0.14.0`、`golang.org/x/sync v0.19.0`、`github.com/hashicorp/golang-lru/v2 v2.0.7`。
 
 ---
 
@@ -42,7 +43,7 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 |------|------|-------------|
 | 责任链 Chain of Responsibility | 多处理者链 | `type Middleware func(http.Handler) http.Handler` |
 | 命令 Command | 请求封装为对象 | `type Command interface { Execute() error; Undo() error }` |
-| 迭代器 Iterator | 顺序访问元素 | Go 1.23+ `iter.Seq[T]` |
+| 迭代器 Iterator | 顺序访问元素 | `iter.Seq[T]` + `for range` |
 | 中介者 Mediator | 封装对象交互 | `EventBus` + `Subscribe/Publish` |
 | 备忘录 Memento | 捕获内部状态 | `Save() *Memento` / `Restore(*Memento)` |
 | 观察者 Observer | 一对多依赖通知 | `Attach(Observer)` / `Notify(Event)` 或 channel |
@@ -61,8 +62,8 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 
 | 模式 | 意图 | 关键库/签名 |
 |------|------|-------------|
-| 断路器 Circuit Breaker | 防止反复失败操作 | `gobreaker.NewCircuitBreaker(Settings{})` |
-| 重试 Retry | 透明重试临时故障 | `retry.Do(fn, retry.Attempts(5), retry.BackOffDelay)` |
+| 断路器 Circuit Breaker | 防止反复失败操作 | `gobreaker.NewCircuitBreaker[T](gobreaker.Settings{})` |
+| 重试 Retry | 透明重试临时故障 | `retry.New(retry.Attempts(5), retry.DelayType(retry.BackOffDelay)).Do(fn)` |
 | 隔离 Bulkhead | 故障隔离 | `sem chan struct{}` 信号量 |
 | 限流 Rate Limiting | 控制消耗速率 | `rate.NewLimiter(rate.Limit(100), 10)` |
 
@@ -239,5 +240,5 @@ project/
 - [references/concurrency.md](references/concurrency.md) - Go 并发模式完整代码
 - [Refactoring Guru 设计模式](https://refactoringguru.cn/design-patterns)
 - [Microsoft 云架构模式](https://learn.microsoft.com/zh-cn/azure/architecture/patterns/)
-- [Go Patterns](https://github.com/tmrts/go-patterns)
 - [ADR GitHub Organization](https://adr.github.io/)
+- [gobreaker/v2](https://pkg.go.dev/github.com/sony/gobreaker/v2) · [retry-go/v5](https://pkg.go.dev/github.com/avast/retry-go/v5) · [x/time/rate](https://pkg.go.dev/golang.org/x/time/rate)

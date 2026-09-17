@@ -84,9 +84,9 @@ echo -n "gh auth: "; gh auth status 2>/dev/null | head -2 || echo "NOT AUTHENTIC
 1. **环境检查** — 运行上述工具可用性检查命令
 2. **配置检查** — 验证引用文件存在：
    ```bash
-   ls skills/cr/references/*.md
-   ls agents/code-reviewer/AGENT.md
-   ls agents/security-auditor/AGENT.md
+   ls references/*.md
+   ls "${CLAUDE_PLUGIN_ROOT:-.}"/agents/code-reviewer.md
+   ls "${CLAUDE_PLUGIN_ROOT:-.}"/agents/security-auditor.md
    ```
 3. **Git 状态检查** — 确认 git 仓库状态正常：
    ```bash

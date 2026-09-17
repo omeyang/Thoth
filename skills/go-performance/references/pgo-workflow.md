@@ -1,4 +1,4 @@
-# PGO 落地完整工作流（Go 1.21 GA，1.25 成熟）
+# PGO 落地完整工作流（基线 go1.24.6）
 
 ## 什么是 PGO
 
@@ -11,7 +11,7 @@ Profile-Guided Optimization：编译器根据**真实生产 CPU profile** 做"�
 
 ## 典型收益
 
-- **2-14% CPU 降低**（官方数据，Go 1.21 发布）
+- **2-14% CPU 降低**（官方数据）
 - 零代码改动
 - 对接口调用密集、小热函数多的服务效果最好
 - 对 I/O bound、GC 占比高的服务效果有限
@@ -80,7 +80,7 @@ for host in host-a host-b host-c; do
 done
 wait
 
-# 合并（Go 1.21+ 自动支持）
+# 合并
 go tool pprof -proto prof-host-a.pb.gz prof-host-b.pb.gz prof-host-c.pb.gz > default.pgo
 ```
 
@@ -212,7 +212,7 @@ PGO 不会覆盖显式 `//go:noinline` —— 你的指令优先。
 
 ### Q4: PGO 改变行为吗？
 
-不应该。PGO 只影响优化决策，不影响正确性。但复杂 devirtualize 曾在早期版本引入过 bug（1.21.0-1.21.2），**用 1.22+ 版本更稳**。1.25 已非常成熟。
+不应该。PGO 只影响优化决策，不影响正确性。早期版本（1.21.0-1.21.2）的 devirtualize 出过 bug，go1.24.6 已无此问题。
 
 ### Q5: profile 多大合适？
 
@@ -234,7 +234,7 @@ PGO 不会覆盖显式 `//go:noinline` —— 你的指令优先。
    ```
 2. **看 profile 覆盖率**：`go tool pprof -top default.pgo` 应有代表性热点
 3. **看是否瓶颈在 IO / GC**：PGO 主要优化 CPU，IO / GC bound 收益有限
-4. **Go 版本太老**：1.21.0-1.21.2 有问题，升到 1.22+ / 1.25+
+4. **Go 版本太老**：1.21.0-1.21.2 有问题，统一用 go1.24.6
 5. **采样不稳**：启动期、冷缓存采的 profile 不代表稳态
 
 ---

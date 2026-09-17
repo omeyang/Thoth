@@ -1,0 +1,24 @@
+{
+  "name": "thoth",
+  "owner": {
+    "name": "omeyang",
+    "url": "https://github.com/omeyang"
+  },
+  "metadata": {
+    "description": "Thoth：面向 Claude Code / Codex 的 Go 后端 AI 编码工具箱",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "thoth",
+      "description": "Go 后端技能、子代理与 Hook 守护（go1.24.6 基线，工程标准与 Maat 一致）",
+      "version": "1.0.0",
+      "source": {
+        "source": "github",
+        "repo": "omeyang/Thoth"
+      },
+      "category": "development",
+      "keywords": ["go", "golang", "backend", "code-review"]
+    }
+  ]
+}

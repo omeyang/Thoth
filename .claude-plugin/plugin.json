@@ -1,0 +1,14 @@
+{
+  "name": "thoth",
+  "displayName": "Thoth",
+  "version": "1.0.0",
+  "description": "Go 后端 AI 编码工具箱：27 个技能、5 个子代理、Hook 守护，工程标准与 Maat 一致（go1.24.6 基线）",
+  "author": {
+    "name": "omeyang",
+    "url": "https://github.com/omeyang"
+  },
+  "homepage": "https://github.com/omeyang/Thoth",
+  "repository": "https://github.com/omeyang/Thoth",
+  "license": "MIT",
+  "keywords": ["go", "golang", "backend", "kafka", "pulsar", "redis", "mongodb", "clickhouse", "etcd", "grpc", "kubernetes", "opentelemetry", "code-review", "codex"]
+}

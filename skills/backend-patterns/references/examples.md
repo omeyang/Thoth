@@ -1,5 +1,8 @@
 # 后端架构模式 - 完整代码示例
 
+基线：go1.24.6。依赖：`go.mongodb.org/mongo-driver/v2 v2.8.2`、`github.com/golang-jwt/jwt/v5 v5.3.1`、
+`github.com/google/uuid v1.6.0`。
+
 ## 目录
 
 - [Repository 模式实现](#repository-模式实现)
@@ -19,6 +22,15 @@
 ## Repository 模式实现
 
 ```go
+import (
+    "context"
+    "fmt"
+
+    "go.mongodb.org/mongo-driver/v2/bson"
+    "go.mongodb.org/mongo-driver/v2/mongo"
+    "go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
 // 接口定义在使用方
 type UserRepository interface {
     FindAll(ctx context.Context, filters UserFilters) ([]*User, error)
@@ -147,7 +159,7 @@ func RecoveryMiddleware(logger *slog.Logger) Middleware {
             defer func() {
                 if err := recover(); err != nil {
                     logger.Error("panic recovered", "error", err)
-                    http.Error(w, "Internal Server Error", 500)
+                    http.Error(w, "Internal Server Error", http.StatusInternalServerError)
                 }
             }()
             next.ServeHTTP(w, r)
@@ -180,26 +192,40 @@ query := `SELECT * FROM users WHERE status = $1`
 
 // ❌ N+1 问题
 func (s *OrderService) GetOrdersWithUsers(ctx context.Context) ([]*OrderWithUser, error) {
-    orders, _ := s.orderRepo.FindAll(ctx)
+    orders, err := s.orderRepo.FindAll(ctx)
+    if err != nil {
+        return nil, err
+    }
     for _, order := range orders {
-        order.User, _ = s.userRepo.FindByID(ctx, order.UserID)  // N 次查询
+        order.User, err = s.userRepo.FindByID(ctx, order.UserID) // N 次查询
+        if err != nil {
+            return nil, err
+        }
     }
     return orders, nil
 }
 
 // ✅ 批量获取
 func (s *OrderService) GetOrdersWithUsers(ctx context.Context) ([]*OrderWithUser, error) {
-    orders, _ := s.orderRepo.FindAll(ctx)
+    orders, err := s.orderRepo.FindAll(ctx)
+    if err != nil {
+        return nil, err
+    }
 
-    // 收集所有用户 ID
+    // 收集所有用户 ID（去重）
     userIDs := make([]string, 0, len(orders))
     for _, order := range orders {
         userIDs = append(userIDs, order.UserID)
     }
+    slices.Sort(userIDs)
+    userIDs = slices.Compact(userIDs)
 
     // 批量获取用户（1 次查询）
-    users, _ := s.userRepo.FindByIDs(ctx, userIDs)
-    userMap := make(map[string]*User)
+    users, err := s.userRepo.FindByIDs(ctx, userIDs)
+    if err != nil {
+        return nil, err
+    }
+    userMap := make(map[string]*User, len(users))
     for _, user := range users {
         userMap[user.ID] = user
     }
@@ -216,7 +242,17 @@ func (s *OrderService) GetOrdersWithUsers(ctx context.Context) ([]*OrderWithUser
 
 ## 事务模式实现
 
+mongo-driver v2.8.2：`WithTransaction` 的回调签名是 `func(ctx context.Context) (any, error)`，
+传入的 `ctx` 已绑定 session，Repository 无需感知事务。
+
 ```go
+import (
+    "context"
+    "fmt"
+
+    "go.mongodb.org/mongo-driver/v2/mongo"
+)
+
 type TxManager interface {
     WithTransaction(ctx context.Context, fn func(ctx context.Context) error) error
 }
@@ -232,8 +268,8 @@ func (m *mongoTxManager) WithTransaction(ctx context.Context, fn func(ctx contex
     }
     defer session.EndSession(ctx)
 
-    _, err = session.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (interface{}, error) {
-        return nil, fn(sessCtx)
+    _, err = session.WithTransaction(ctx, func(txCtx context.Context) (any, error) {
+        return nil, fn(txCtx)
     })
     return err
 }
@@ -348,7 +384,7 @@ func ErrorHandler(logger *slog.Logger) func(http.Handler) http.Handler {
             defer func() {
                 if err := recover(); err != nil {
                     logger.Error("panic", "error", err)
-                    writeJSON(w, 500, map[string]string{"message": "internal error"})
+                    writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "internal error"})
                 }
             }()
             next.ServeHTTP(w, r)
@@ -362,7 +398,13 @@ func handleError(w http.ResponseWriter, err error) {
         writeJSON(w, apiErr.Code, apiErr)
         return
     }
-    writeJSON(w, 500, map[string]string{"message": "internal error"})
+    writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "internal error"})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+    _ = json.NewEncoder(w).Encode(v)
 }
 ```
 
@@ -426,6 +468,17 @@ result, err := WithRetry(ctx, DefaultRetryConfig(), func() (*Response, error) {
 ### JWT 验证
 
 ```go
+import (
+    "context"
+    "errors"
+    "fmt"
+    "net/http"
+    "strings"
+    "time"
+
+    "github.com/golang-jwt/jwt/v5"
+)
+
 type Claims struct {
     UserID string `json:"user_id"`
     Email  string `json:"email"`
@@ -435,33 +488,63 @@ type Claims struct {
 
 type AuthService struct {
     secret []byte
+    issuer string
 }
 
-func (s *AuthService) ValidateToken(tokenString string) (*Claims, error) {
-    token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-        if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-            return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-        }
-        return s.secret, nil
-    })
+// IssueToken 签发 HS256 token
+func (s *AuthService) IssueToken(userID, email, role string, ttl time.Duration) (string, error) {
+    now := time.Now()
+    claims := Claims{
+        UserID: userID,
+        Email:  email,
+        Role:   role,
+        RegisteredClaims: jwt.RegisteredClaims{
+            Issuer:    s.issuer,
+            Subject:   userID,
+            IssuedAt:  jwt.NewNumericDate(now),
+            ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+        },
+    }
+    return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.secret)
+}
 
+// ValidateToken 解析并校验；jwt.WithValidMethods 固定算法，防止 alg 混淆攻击
+func (s *AuthService) ValidateToken(tokenString string) (*Claims, error) {
+    claims := &Claims{}
+    token, err := jwt.ParseWithClaims(tokenString, claims,
+        func(token *jwt.Token) (any, error) { return s.secret, nil },
+        jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+        jwt.WithIssuer(s.issuer),
+        jwt.WithExpirationRequired(),
+    )
     if err != nil {
         return nil, fmt.Errorf("parse token: %w", err)
     }
-
-    claims, ok := token.Claims.(*Claims)
-    if !ok || !token.Valid {
+    if !token.Valid {
         return nil, errors.New("invalid token")
     }
-
     return claims, nil
+}
+
+// context key 用未导出类型，避免与其他包冲突
+type ctxKey int
+
+const (
+    userClaimsKey ctxKey = iota
+    requestIDKey
+    loggerKey
+)
+
+func GetClaims(ctx context.Context) *Claims {
+    claims, _ := ctx.Value(userClaimsKey).(*Claims)
+    return claims
 }
 
 func AuthMiddleware(authService *AuthService) Middleware {
     return func(next http.Handler) http.Handler {
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-            if token == "" {
+            token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+            if !ok || token == "" {
                 handleError(w, ErrUnauthorized)
                 return
             }
@@ -499,16 +582,7 @@ var rolePermissions = map[string][]Permission{
 }
 
 func HasPermission(role string, perm Permission) bool {
-    perms, ok := rolePermissions[role]
-    if !ok {
-        return false
-    }
-    for _, p := range perms {
-        if p == perm {
-            return true
-        }
-    }
-    return false
+    return slices.Contains(rolePermissions[role], perm)
 }
 
 func RequirePermission(perm Permission) Middleware {
@@ -658,7 +732,7 @@ func NewJobQueue(workers int, handler func(Job) error, logger *slog.Logger) *Job
 }
 
 func (q *JobQueue) Start(ctx context.Context) {
-    for i := 0; i < q.workers; i++ {
+    for i := range q.workers {
         q.wg.Add(1)
         go q.worker(ctx, i)
     }
@@ -670,7 +744,10 @@ func (q *JobQueue) worker(ctx context.Context, id int) {
         select {
         case <-ctx.Done():
             return
-        case job := <-q.jobs:
+        case job, ok := <-q.jobs:
+            if !ok {
+                return // 队列已关闭且排空
+            }
             if err := q.handler(job); err != nil {
                 q.logger.Error("job failed",
                     "worker", id,
@@ -691,6 +768,7 @@ func (q *JobQueue) Enqueue(job Job) error {
     }
 }
 
+// Shutdown 关闭入队并等待 worker 处理完剩余任务。Shutdown 之后不得再 Enqueue。
 func (q *JobQueue) Shutdown() {
     close(q.jobs)
     q.wg.Wait()
@@ -702,6 +780,8 @@ func (q *JobQueue) Shutdown() {
 ## 结构化日志实现
 
 ```go
+import "github.com/google/uuid" // v1.6.0
+
 type RequestLogger struct {
     logger *slog.Logger
 }
@@ -747,7 +827,7 @@ func LoggerFromContext(ctx context.Context) *slog.Logger {
 // 使用
 func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request) {
     logger := LoggerFromContext(r.Context())
-    logger.Info("fetching user", "user_id", chi.URLParam(r, "id"))
+    logger.Info("fetching user", "user_id", r.PathValue("id"))
     // ...
 }
 ```

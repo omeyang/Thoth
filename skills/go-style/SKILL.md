@@ -1,13 +1,13 @@
 ---
 name: go-style
 description: "Go 代码规范与后端开发专家 - 接口设计(使用方定义)、并发安全(goroutine退出策略)、错误处理(%w包装)、命名规范、HTTP服务(handler/路由/中间件/JSON helper)、项目结构(cmd/internal/pkg)、API设计(函数选项/Context)、golangci-lint配置。适用：代码审查、Go惯用法重构、HTTP后端开发、API设计、项目结构规划。不适用：非Go语言项目、前端开发、纯算法实现(应使用algorithms技能)。触发词：go style, 代码规范, code review, 代码审查, http handler, 中间件, middleware, 项目结构, 命名规范, golangci-lint, 惯用法, idiomatic go"
-user-invocable: true
-allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # Go 代码规范与后端开发专家
 
 审查或编写符合 Go 惯用法的代码：$ARGUMENTS
+
+基线：go1.24.6，golangci-lint v2.8.0，goimports（golang.org/x/tools v0.42.0）。
 
 ---
 
@@ -117,7 +117,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
             http.Error(w, apiErr.Message, apiErr.Code)
             return
         }
-        http.Error(w, "Internal Server Error", 500)
+        http.Error(w, "Internal Server Error", http.StatusInternalServerError)
     }
 }
 ```
@@ -150,7 +150,7 @@ func NewServer(db *sql.DB, cache *redis.Client, logger *slog.Logger) *Server {
 func (s *Server) Routes() http.Handler {
     mux := http.NewServeMux()
 
-    // RESTful 风格（Go 1.22+）
+    // 方法 + 路径模式路由，路径参数用 r.PathValue("id") 读取
     mux.Handle("GET /users", s.handleListUsers())
     mux.Handle("POST /users", s.handleCreateUser())
     mux.Handle("GET /users/{id}", s.handleGetUser())
@@ -221,7 +221,7 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         defer func() {
             if err := recover(); err != nil {
-                http.Error(w, "Internal Server Error", 500)
+                http.Error(w, "Internal Server Error", http.StatusInternalServerError)
             }
         }()
         next.ServeHTTP(w, r)
@@ -271,10 +271,18 @@ package main
 
 import (
     "context"
+    "errors"
     "fmt"
+    "log/slog"
+    "net/http"
     "os"
     "os/signal"
     "syscall"
+    "time"
+
+    "myapp/internal/config"
+    "myapp/internal/platform/database"
+    "myapp/internal/server"
 )
 
 func main() {
@@ -313,13 +321,27 @@ func run(ctx context.Context, args []string, env []string) error {
     ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
     defer stop()
 
+    errCh := make(chan error, 1)
     go func() {
-        <-ctx.Done()
-        httpServer.Shutdown(context.Background())
+        logger.Info("server starting", "addr", cfg.Addr)
+        errCh <- httpServer.ListenAndServe()
     }()
 
-    logger.Info("server starting", "addr", cfg.Addr)
-    return httpServer.ListenAndServe()
+    select {
+    case err := <-errCh:
+        if !errors.Is(err, http.ErrServerClosed) {
+            return fmt.Errorf("listen: %w", err)
+        }
+        return nil
+    case <-ctx.Done():
+    }
+
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    if err := httpServer.Shutdown(shutdownCtx); err != nil {
+        return fmt.Errorf("shutdown: %w", err)
+    }
+    return nil
 }
 ```
 
@@ -383,51 +405,58 @@ golangci-lint run ./...
 go build ./...
 ```
 
-### .golangci.yml 推荐配置
+### .golangci.yml 推荐配置（golangci-lint v2.8.0）
+
+v2 配置以 `version: "2"` 开头；`default: standard` 已包含 errcheck、govet、staticcheck、unused、ineffassign；
+格式化工具（gofmt/goimports）从 linters 移到 `formatters`。
 
 ```yaml
-linters:
-  enable:
-    - errcheck      # 未处理的错误
-    - govet         # 官方静态分析
-    - staticcheck   # 高级静态分析
-    - unused        # 未使用的代码
-    - ineffassign   # 无效赋值
-    - misspell      # 拼写检查
-    - gofmt         # 格式化检查
-    - goimports     # 导入检查
+version: "2"
 
-linters-settings:
-  errcheck:
-    check-blank: true
+linters:
+  default: standard        # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - misspell             # 拼写检查
+    - errorlint            # errors.Is/As 与 %w 检查
+    - gosec                # 安全扫描
+    - revive               # 命名与注释规范
+  settings:
+    errcheck:
+      check-blank: true
+    govet:
+      enable:
+        - shadow
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 ```
+
+运行：`golangci-lint run ./...`；格式化：`golangci-lint fmt ./...`。
 
 ---
 
 ## 第六部分：文档规范
 
-### 包文档（doc.go）
-
 ```go
-// Package user provides user management functionality including
-// authentication, authorization, and profile management.
+// Package user provides user management: authentication, authorization
+// and profile management.
 //
 // Basic usage:
 //
-//     svc := user.NewService(db)
-//     user, err := svc.GetByID(ctx, "user-123")
+//	svc := user.NewService(db)
+//	u, err := svc.GetByID(ctx, "user-123")
 package user
-```
 
-### 函数文档
-
-```go
 // GetByID retrieves a user by their unique identifier.
 // It returns ErrNotFound if no user exists with the given ID.
 //
 // GetByID is safe for concurrent use.
 func (s *Service) GetByID(ctx context.Context, id string) (*User, error)
 ```
+
+包文档放在 `doc.go`，注释以被描述的标识符开头，代码块用 tab 缩进（gofmt 会规范化）。
 
 ---
 
@@ -456,19 +485,13 @@ func (s *Service) GetByID(ctx context.Context, id string) (*User, error)
 
 ---
 
-## 工作流：添加 API 端点
+## 工作流
 
-1. 检查 `routes.go` 和 `server.go`
-2. 定义请求/响应结构体
-3. 实现 handler 方法
-4. 在 `Routes()` 中注册路由
-5. 添加测试用例
-6. 验证编译和测试通过
+- **添加 API 端点**：检查 `routes.go`/`server.go` -> 定义请求/响应结构体 -> 实现 handler -> 在 `Routes()` 注册 -> 添加测试 -> 验证编译与测试通过
+- **代码审查**：理解功能 -> 对照检查清单 -> 给出可操作反馈（"这个接口在实现方定义，应移到使用方"、"这个 goroutine 没有检查 ctx，可能泄漏"）
 
-## 工作流：代码审查
+## 参考资料
 
-1. 理解代码功能
-2. 对照检查清单审查
-3. 提供可操作的反馈：
-   - "这个接口在实现方定义，应移到使用方"
-   - "这个 goroutine 可能泄漏，因为没有检查 ctx"
+- [Effective Go](https://go.dev/doc/effective_go)
+- [Go Code Review Comments](https://go.dev/wiki/CodeReviewComments)
+- [golangci-lint 配置](https://golangci-lint.run/docs/configuration/file/)

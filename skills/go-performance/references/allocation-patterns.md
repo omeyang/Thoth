@@ -1,4 +1,4 @@
-# 分配优化模式集（Go 1.25.9+）
+# 分配优化模式集（基线 go1.24.6）
 
 从"每次 op 分配多少字节"压到 0。每个模式含可验证的 benchmark 预期。
 
@@ -96,7 +96,7 @@ type Counter struct {
 }
 ```
 
-用 Go 1.24+ 的 `//go:align 64` 编译指令（实验性，看版本支持）或手动 padding。
+Go 1.24 没有 `//go:align` 之类的对齐指令，cache line 对齐只能手动 padding，或把两个热计数器放进各自独立分配的对象。
 
 ---
 
@@ -212,7 +212,7 @@ func (r *Request) Reset() {
 
 // 正确
 func (r *Request) Reset() {
-    clear(r.Headers)            // Go 1.21+ built-in：把每个元素清零
+    clear(r.Headers)            // 内置 clear：把每个元素清零
     r.Headers = r.Headers[:0]
 }
 ```
@@ -249,7 +249,7 @@ func (p *MonitoredPool) Get() any {
 
 ---
 
-## 4. unsafe.String / unsafe.Slice（Go 1.20+）
+## 4. unsafe.String / unsafe.Slice
 
 ### 4.1 签名
 
@@ -315,7 +315,7 @@ func BadAPI(s string) []byte { return s2b(s) }  // 调用者可能写
 
 ---
 
-## 5. weak.Pointer 缓存（Go 1.24+）
+## 5. weak.Pointer 缓存（Go 1.24）
 
 ### 5.1 核心概念
 
@@ -397,7 +397,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
     }()
 
     // 解析 id，避免 strconv.Atoi 返回 err.Error() 堆分配
-    id, err := strconv.Atoi(r.PathValue("id"))    // Go 1.22+ ServeMux PathValue
+    id, err := strconv.Atoi(r.PathValue("id"))    // ServeMux 路径参数
     if err != nil {
         http.Error(w, "bad id", http.StatusBadRequest)
         return
@@ -415,7 +415,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 `encoding/json` 标准库难做到零分配（反射）。替代方案：
 - 手写 `AppendJSON`（`strconv.Append*` + `append`）
 - 代码生成（`easyjson`、`go-json`）
-- `encoding/json/v2`（Go 1.25 `GOEXPERIMENT=jsonv2`）设计上减少分配
+- 流式：`json.NewEncoder(w).Encode(v)` 直接写响应，省掉中间 `[]byte`
 
 ---
 
@@ -430,7 +430,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 | 读 Reader | `buf := make([]byte, n); io.ReadFull(r, buf)` |
 | channel 容量 | 估算生产速率 × 期望消费延迟 |
 
-**切片 grow 回收**（Go 1.21+ `slices.Clip`）：
+**切片 grow 回收**（`slices.Clip`）：
 
 ```go
 func compact(s []int) []int {
@@ -460,11 +460,11 @@ buf = t.AppendFormat(buf, time.RFC3339)
 
 ### 8.3 `strings.Split` → `[]string`
 
-每次分配新切片。替代：`strings.SplitSeq`（Go 1.24+ 返回 `iter.Seq`，无分配）
+每次分配新切片。替代：`strings.SplitSeq`（Go 1.24 返回 `iter.Seq[string]`，无分配）
 
 ```go
 import "strings"
-for part := range strings.SplitSeq(s, ",") {   // Go 1.24+
+for part := range strings.SplitSeq(s, ",") {   // Go 1.24
     _ = part
 }
 ```

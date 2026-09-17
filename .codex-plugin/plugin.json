@@ -1,0 +1,21 @@
+{
+  "name": "thoth",
+  "version": "1.0.0",
+  "description": "Go 后端 AI 编码工具箱：27 个技能与 Hook 守护，工程标准与 Maat 一致（go1.24.6 基线）",
+  "author": { "name": "omeyang", "url": "https://github.com/omeyang" },
+  "homepage": "https://github.com/omeyang/Thoth",
+  "repository": "https://github.com/omeyang/Thoth",
+  "license": "MIT",
+  "keywords": ["go", "golang", "backend", "kafka", "redis", "mongodb", "grpc", "kubernetes", "opentelemetry", "code-review"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Thoth",
+    "shortDescription": "Go 后端工程技能：中间件、性能、审查、需求验收",
+    "longDescription": "27 个 Go 后端技能（Kafka、Pulsar、Redis、MongoDB、ClickHouse、etcd、gRPC、K8s、OpenTelemetry、性能、运行时、代码审查、需求自验收等），基线 go1.24.6，工程标准与 Maat 一致。",
+    "developerName": "omeyang",
+    "category": "Developer Tools",
+    "capabilities": [],
+    "defaultPrompt": ["用 $cr 审查当前改动", "用 $go-test 补表驱动测试"]
+  }
+}

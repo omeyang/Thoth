@@ -1,89 +1,39 @@
 # mcp
 
-MCP (Model Context Protocol) 服务器配置和参考文档。
-
-## 目录结构
-
-```
-mcp/
-├── README.md
-├── configs/                    # .mcp.json 配置模板
-│   ├── go-backend-full.json    # 完整配置（K8s+DB+MQ+OTel+GitHub）
-│   ├── go-backend-minimal.json # 最小配置（GitHub+推理）
-│   └── observability.json      # 可观测性配置（OTel）
-└── servers/
-    └── README.md               # MCP 服务器参考清单
-```
-
-## 快速开始
-
-### 1. 选择配置模板
+项目级 `.mcp.json` 模板。MCP 服务器连接的是具体项目的基础设施，凭证按项目走，所以不随插件自动装载，而是复制到目标项目根目录：
 
 ```bash
-# 完整配置（推荐）
-cp /path/to/Thoth/mcp/configs/go-backend-full.json your-project/.mcp.json
-
-# 最小配置
-cp /path/to/Thoth/mcp/configs/go-backend-minimal.json your-project/.mcp.json
+cp Thoth/mcp/configs/go-backend-full.json your-project/.mcp.json
 ```
 
-### 2. 设置环境变量
+| 模板 | 内容 | 场景 |
+|------|------|------|
+| `go-backend-full.json` | GitHub、Kubernetes、MongoDB、Redis、ClickHouse、Kafka、Sequential Thinking | Go 微服务全栈开发、线上排查 |
+| `go-backend-minimal.json` | GitHub、Sequential Thinking | 纯代码开发、开源贡献 |
+| `observability.json` | OpenTelemetry（Jaeger / Tempo） | 链路排查，与 full 叠加使用 |
 
-配置中使用 `${VAR}` 格式引用环境变量。在项目中创建 `.env` 文件（记得加入 `.gitignore`）：
+## 环境变量
+
+模板用 `${VAR}` 与 `${VAR:-默认值}` 引用环境变量（Claude Code 的 `.mcp.json` 支持这种展开）。Codex 的 MCP 配置在 `~/.codex/config.toml` 的 `[mcp_servers.<name>]`，不支持 `${VAR}`，用 `codex mcp add` 逐个添加并通过 `env_vars` 透传环境变量。
 
 ```bash
-# .env — 完整配置所需的环境变量
-GITHUB_TOKEN=ghp_xxxxx
-
-# MongoDB
+GITHUB_TOKEN=github_pat_xxx            # GitHub 官方 MCP（HTTP），需要 PAT
 MONGODB_URI=mongodb://localhost:27017
-MONGO_DEFAULT_DATABASE=mydb
-
-# Redis
-REDIS_URL=redis://localhost:6379
-
-# ClickHouse
-CLICKHOUSE_HOST=localhost
-CLICKHOUSE_PORT=8123
-CLICKHOUSE_USER=default
-CLICKHOUSE_PASSWORD=
-CLICKHOUSE_SECURE=false
-
-# Kafka
+REDIS_URL=redis://localhost:6379/0
+CLICKHOUSE_HOST=localhost              # 其余 CLICKHOUSE_* 有默认值
 KAFKA_BROKERS=localhost:9092
-KAFKA_SASL_MECHANISM=
-KAFKA_SASL_USERNAME=
-KAFKA_SASL_PASSWORD=
-
-# OpenTelemetry (observability.json)
-OTEL_BACKEND_TYPE=jaeger
+OTEL_BACKEND_TYPE=jaeger               # observability.json
 OTEL_BACKEND_URL=http://localhost:16686
 ```
 
-### 3. CLI 快速添加
+把这些放进 `.env` 并加入 `.gitignore`。`protect-secrets` 钩子会拦截对 `.env` 的读写。
 
-也可以通过 `claude mcp add` 命令逐个添加：
+## 服务器清单
 
-```bash
-claude mcp add github -- npx -y @modelcontextprotocol/server-github
-claude mcp add kubernetes -- npx -y kubernetes-mcp-server@latest
-claude mcp add redis -- npx -y @modelcontextprotocol/server-redis redis://localhost:6379
-claude mcp add mongodb -- npx -y mongodb-mcp-server
-claude mcp add sequential-thinking -- npx -y @modelcontextprotocol/server-sequential-thinking
-```
+各服务器的来源、能力与替代实现见 [servers/README.md](./servers/README.md)。
 
-## 配置组合建议
+## 安全
 
-| 场景 | 配置 |
-|------|------|
-| Go 微服务全栈开发 | `go-backend-full.json` |
-| 纯代码开发（无基础设施） | `go-backend-minimal.json` |
-| 线上问题排查 | `go-backend-full.json` + `observability.json` |
-| 开源项目贡献 | `go-backend-minimal.json` |
-
-## 安全注意事项
-
-- `.mcp.json` 中的 token/密码应通过环境变量引用，**不要硬编码**
-- 将 `.env` 加入 `.gitignore`
-- 生产环境数据库建议使用只读账号
-- Kubernetes MCP 使用当前 kubeconfig context，注意切换环境
+- MongoDB 模板默认 `--readOnly`；生产库统一用只读账号。
+- Kubernetes MCP 使用当前 kubeconfig context，切环境前先确认。
+- GitHub MCP 走官方托管服务，PAT 只授予需要的权限范围。

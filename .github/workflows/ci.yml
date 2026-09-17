@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装工具
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q shellcheck bats jq gettext
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+      - name: 结构校验
+        run: scripts/validate.sh
+      - name: shellcheck
+        run: shellcheck hooks/scripts/*.sh scripts/*.sh
+      - name: 插件清单校验
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate .claude-plugin/plugin.json --strict
+          claude plugin validate .claude-plugin/marketplace.json --strict
+          claude plugin validate skills --strict
+          claude plugin validate agents --strict
+      - name: adversarial-review
+        run: make -C workflows/adversarial-review lint test
+      - name: design-review
+        run: make -C workflows/design-review lint test

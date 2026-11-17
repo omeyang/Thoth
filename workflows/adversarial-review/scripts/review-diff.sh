@@ -133,7 +133,7 @@ TARGET=$(target_from_diff "$NAME_FILE" "$SCOPE")
 source "$LIB_DIR/quorum.sh"
 
 # trap SIGINT
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 on_signal() {
   local sig="$1"
   log_append "$LOG_FILE" "$RUN_DIR" "$(printf '## %s TARGET=%s\n- 状态: INTERRUPTED (%s)\n- staged: %s\n' "$(date +%F)" "$TARGET" "$sig" "$(tr '\n' ' ' < "$NAME_FILE")")"

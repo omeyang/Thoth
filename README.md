@@ -3,15 +3,15 @@
 > 让 AI 编码助手按 Maat 的标准做事。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
-[![Skills: 27](https://img.shields.io/badge/Skills-27-blue)](./skills/CATALOG.md)
+[![Skills: 28](https://img.shields.io/badge/Skills-28-blue)](./skills/CATALOG.md)
 [![Go: 1.24.6](https://img.shields.io/badge/Go-1.24.6-00ADD8)](#基线)
 [![CI](https://github.com/omeyang/Thoth/actions/workflows/ci.yml/badge.svg)](https://github.com/omeyang/Thoth/actions/workflows/ci.yml)
 
-Thoth 是一个 Claude Code / Codex 插件：27 个 Go 后端技能、5 个子代理、一组事件钩子，外加两个多 Agent 对抗审查工作流和项目模板。工程标准与 [Maat](https://github.com/omeyang/Maat) 保持一致：Maat 定义什么是正确，Thoth 把这些标准装进 AI 工具的日常工作流。
+Thoth 是一个 Claude Code / Codex 插件：27 个 Go 后端技能、1 个业务图解技能、5 个子代理、一组事件钩子，外加两个多 Agent 对抗审查工作流和项目模板。工程标准与 [Maat](https://github.com/omeyang/Maat) 保持一致：Maat 定义什么是正确，Thoth 把这些标准装进 AI 工具的日常工作流。
 
 名字来源：托特（Thoth）是古埃及神话中的书记与智慧之神。在"称心仪式"中，玛特（Maat）的羽毛是衡量的标尺，托特负责记录裁决。
 
-适用对象：用 Claude Code 或 Codex 做 Go 后端开发的个人与团队；需要把代码审查、设计评审、需求验收交给多 Agent 自动执行的项目。
+适用对象：用 Claude Code 或 Codex 做 Go 后端开发的个人与团队；需要把代码审查、设计评审、需求验收交给多 Agent 自动执行的项目；需要把真实业务问题讲清楚、辅助人工决策的团队。
 
 ## 安装
 
@@ -33,6 +33,21 @@ codex plugin add thoth@thoth
 
 技能以 `$<name>` 调用（如 `$cr`）。插件自带的钩子在 Codex 里需要先在 `/hooks` 中审阅信任。子代理复制 `templates/codex-agents/*.toml` 到 `~/.codex/agents/`。
 
+### Kimi / Kimi Work：只安装业务图解技能
+
+`explain-business-visually` 用于把真实业务问题做成有证据、有示例、有动画的决策说明页。无需安装整套 Thoth。
+
+**方法一：把下面这段话直接发给 Kimi。**
+
+```text
+请从这个 GitHub 目录安装 explain-business-visually 技能，并添加到我的 Kimi 工作区：
+https://github.com/omeyang/Thoth/tree/main/skills/explain-business-visually
+```
+
+**方法二：本地上传。** 下载 [ZIP 安装包](https://github.com/omeyang/Thoth/releases/latest/download/explain-business-visually.zip)，在 Kimi Work 中上传该本地技能包。支持 `.skill` 扩展名的客户端也可以下载 [.skill 安装包](https://github.com/omeyang/Thoth/releases/latest/download/explain-business-visually.skill)，两种安装包内容相同。
+
+安装后在新对话中选择 `/explain-business-visually`，或直接描述需要讲清楚的业务场景、问题和决策点。
+
 ### 项目模板
 
 ```bash
@@ -49,7 +64,7 @@ cp Thoth/mcp/configs/go-backend-full.json your-project/.mcp.json
 
 | 目录 | 内容 |
 |------|------|
-| [skills/](./skills/CATALOG.md) | 27 个技能：Go 开发与运行时（golang-patterns、go-style、go-test、go-performance、go-runtime、algorithms）、中间件（kafka、pulsar、redis、mongodb、clickhouse、etcd、grpc、k8s、otel）、架构与韧性（design-patterns、backend-patterns、api-design、resilience、idempotency、multi-tenant）、流程（cr、tdd-go、deploy-k8s、reqloop、reqloop-lite）、图表导出 |
+| [skills/](./skills/CATALOG.md) | 28 个技能：Go 开发与运行时（golang-patterns、go-style、go-test、go-performance、go-runtime、algorithms）、中间件（kafka、pulsar、redis、mongodb、clickhouse、etcd、grpc、k8s、otel）、架构与韧性（design-patterns、backend-patterns、api-design、resilience、idempotency、multi-tenant）、流程（cr、tdd-go、deploy-k8s、reqloop、reqloop-lite）、图表导出与业务图解 |
 | [agents/](./docs/agents.md) | golang-pro、code-reviewer、security-auditor、db-specialist、k8s-devops |
 | [hooks/](./hooks/README.md) | 会话上下文、危险命令拦截、凭证保护、提交信息检查、Go 格式化 / lint / 异步测试 |
 | [mcp/](./mcp/README.md) | 项目级 `.mcp.json` 模板：GitHub、Kubernetes、MongoDB、Redis、ClickHouse、Kafka、OpenTelemetry |

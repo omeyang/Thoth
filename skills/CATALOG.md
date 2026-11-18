@@ -1,6 +1,6 @@
 # 技能包目录
 
-技能包总数：28（由 `scripts/gen-catalog.sh` 生成，不要手改）
+技能包总数：29（由 `scripts/gen-catalog.sh` 生成，不要手改）
 
 安装插件后按 `/thoth:<name>` 调用（Codex 为 `$<name>`）。
 
@@ -34,3 +34,4 @@
 | [`reqloop-lite`](reqloop-lite/SKILL.md) | 轻量版需求自验收 - 反向 spec-driven 验收（code → spec 裁决），不依赖企业 ALM / CI / 内部工具，仅需 git + 语言 test runner；保留 EARS 结构化反讲 + 人工 confirm 硬门禁 + 判定三元组 + 决策链 + 负向影响分析 + 安全例外。适用：开源项目 PR 验收、单仓库小团队、无 ALM 系统的企业、用户提供 PR 描述 / issue 正文希望做需求验收。不适用：需要接入 Spira / DOORS / Jama 等 ALM 或企业 CI 的场景（用 reqloop 完整版）、无需求描述的纯代码审查（用 cr）。触发词：reqloop-lite, 轻量验收, 需求自验收, 反讲, PR 验收, issue 验收, 反向 SDD |
 | [`resilience-go`](resilience-go/SKILL.md) | Go 韧性模式专家 - 熔断器(sony/gobreaker/v2 泛型 CircuitBreaker[T])、重试策略(avast/retry-go/v5 New/NewWithData、指数退避、Unrecoverable)、限流(x/time/rate 令牌桶/按 Key/滑动窗口/redis_rate 分布式 + 本地降级)、超时控制(Context 分层、WithTimeoutCause)、舱壁隔离(x/sync semaphore/errgroup.SetLimit)、降级处理(Fallback/过期缓存)、组合弹性调用。适用：微服务容错、外部服务调用、高可用系统、分布式系统韧性设计。不适用：单体应用内部函数调用、无外部依赖的纯计算逻辑、已有成熟框架(如 Istio)处理韧性的场景。触发词：熔断, circuit breaker, gobreaker, 重试, retry, retry-go, 限流, rate limit, 超时, timeout, 降级, fallback, 舱壁, bulkhead, 韧性, resilience |
 | [`tdd-go`](tdd-go/SKILL.md) | Go TDD 工作流 - 严格 RED-GREEN-REFACTOR 循环：先写失败测试，再写最小实现，最后在测试保护下重构；主 Agent 写测试，golang-pro 子代理负责实现与重构。适用：新功能实现、Bug 修复（先写复现测试）、行为不变的重构、需要 -race 与 lint 双重把关的 Go 包开发。不适用：非 Go 项目、探索性原型（无稳定契约）、纯配置或文档改动、只需补测试不改实现（用 go-test）。触发词：tdd, TDD, 测试驱动, red green refactor, 先写测试, 失败测试, 最小实现, 重构, test first |
+| [`ui-craft`](ui-craft/SKILL.md) | 设计、实现、重塑和评审有辨识度且易用的 UI/UX，尤其擅长把设计、架构和代码实现做成清楚好看的技术讲解页。覆盖设计方向、语义化 DESIGN.md、中文排版、视觉层级、响应式、交互状态、动效、可访问性、Figma 设计实现、静态审计与真实浏览器截图验收。Use when creating or improving websites, landing pages, dashboards, technical explainers, HTML/CSS/React/Vue UI, implementing Figma designs, or when the user says 页面很丑、美化、高级感、anti-slop、UI/UX、frontend design、polish、make it beautiful. 不用于纯后端逻辑或无视觉变化的精确小修改。 |

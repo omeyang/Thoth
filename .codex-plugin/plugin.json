@@ -1,21 +1,21 @@
 {
   "name": "thoth",
-  "version": "1.1.0",
-  "description": "AI 编码与业务图解工具箱：28 个技能与 Hook 守护，工程标准与 Maat 一致（go1.24.6 基线）",
+  "version": "1.2.0",
+  "description": "AI 编码、业务图解与 UI/UX 设计工具箱：29 个技能与 Hook 守护，工程标准与 Maat 一致（go1.24.6 基线）",
   "author": { "name": "omeyang", "url": "https://github.com/omeyang" },
   "homepage": "https://github.com/omeyang/Thoth",
   "repository": "https://github.com/omeyang/Thoth",
   "license": "MIT",
-  "keywords": ["go", "golang", "backend", "kafka", "redis", "mongodb", "grpc", "kubernetes", "opentelemetry", "code-review", "skills", "visualization"],
+  "keywords": ["go", "golang", "backend", "kafka", "redis", "mongodb", "grpc", "kubernetes", "opentelemetry", "code-review", "skills", "visualization", "ui", "ux", "frontend-design"],
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Thoth",
-    "shortDescription": "Go 后端工程与业务图解：中间件、性能、审查、需求验收、决策说明",
-    "longDescription": "27 个 Go 后端技能与 1 个业务图解技能，覆盖 Kafka、Pulsar、Redis、MongoDB、ClickHouse、etcd、gRPC、K8s、OpenTelemetry、性能、运行时、代码审查、需求自验收与业务决策说明，基线 go1.24.6，工程标准与 Maat 一致。",
+    "shortDescription": "Go 后端工程、业务图解与 UI/UX 设计：中间件、性能、审查、需求验收、决策说明与界面打磨",
+    "longDescription": "27 个 Go 后端技能、1 个业务图解技能与 1 个 UI/UX 设计技能，覆盖 Kafka、Pulsar、Redis、MongoDB、ClickHouse、etcd、gRPC、K8s、OpenTelemetry、性能、运行时、代码审查、需求自验收、业务决策说明与技术讲解页设计，基线 go1.24.6，工程标准与 Maat 一致。",
     "developerName": "omeyang",
     "category": "Developer Tools",
     "capabilities": [],
-    "defaultPrompt": ["用 $cr 审查当前改动", "用 $go-test 补表驱动测试"]
+    "defaultPrompt": ["用 $cr 审查当前改动", "用 $go-test 补表驱动测试", "用 $ui-craft 制作技术讲解页"]
   }
 }

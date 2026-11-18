@@ -20,6 +20,11 @@ jobs:
         run: scripts/validate.sh
       - name: shellcheck
         run: shellcheck hooks/scripts/*.sh scripts/*.sh
+      - name: UI Skill 审计、打包与示例检查
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_ui_craft*.py' -v
+          python3 scripts/package-skill.py ui-craft
+          python3 skills/ui-craft/scripts/audit_ui.py --path skills/ui-craft/assets/technical-explainer.html --strict
       - name: 插件清单校验
         run: |
           npm install -g @anthropic-ai/claude-code

@@ -7,7 +7,8 @@
 - 运行 `scripts/validate.sh` 与 `claude plugin validate . --strict`。
 - 修改 `hooks/scripts/` 或 `scripts/` 后运行 `shellcheck`。
 - 修改 `workflows/adversarial-review` 或 `workflows/design-review` 后运行 `make -C workflows/<name> lint test`。
-- 技能内容遵守单一基线：go1.24.6，库版本以技能里写明的版本为准，不引用私有库。
+- 修改 `ui-craft` 或打包脚本后运行 `python -m unittest discover -s scripts/tests -p 'test_ui_craft*.py' -v`，并检查示例页与安装包。
+- 技能内容遵守单一基线：go1.24.6，库版本以技能里写明的版本为准，不引用私有库；UI 技能不引入私有素材或未归因的上游内容。
 - 本地验证插件：`claude --plugin-dir .`，在会话里确认 `/thoth:<skill>` 可见。
 
 ## 提交信息

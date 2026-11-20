@@ -161,6 +161,8 @@ def audit(page_path: str | Path, manifest_path: str | Path) -> dict[str, object]
             errors.append(f"{prefix}.kind 必须是 fact/inference/hypothesis")
         if "evidence" in item or kind == "fact":
             validate_references(errors, item, evidence_ids, prefix, kind == "fact")
+        if kind in {"inference", "hypothesis"}:
+            require_fields(errors, item, ["reasoning", "boundary"], prefix)
 
     decision = data.get("decision")
     if not isinstance(decision, dict) or not isinstance(decision.get("needed"), bool):

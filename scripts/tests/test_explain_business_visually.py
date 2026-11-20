@@ -71,7 +71,16 @@ class AuditExplainerTest(unittest.TestCase):
     def test_fact_needs_evidence_but_inference_can_be_explicit(self) -> None:
         report = self.update(lambda data: data["claims"][0].pop("evidence"))
         self.assertTrue(any("evidence" in error for error in report["errors"]))
+        inference = {"text": "可能重复执行。", "kind": "inference", "reasoning": "已执行后重试会再次进入写入路径。", "boundary": "动作未执行或重复执行不改变结果时不成立。"}
+        report = self.update(lambda data: data.update(claims=[inference]))
+        self.assertEqual([], report["errors"])
+
+    def test_inference_requires_reasoning_and_boundary(self) -> None:
         report = self.update(lambda data: data.update(claims=[{"text": "可能重复执行。", "kind": "inference"}]))
+        self.assertTrue(any("reasoning" in error for error in report["errors"]))
+        self.assertTrue(any("boundary" in error for error in report["errors"]))
+        hypothesis = {"text": "重试可能放大故障。", "kind": "hypothesis", "reasoning": "重试会增加请求量。", "boundary": "重试未发生或被限流时不成立。"}
+        report = self.update(lambda data: data.update(claims=[hypothesis]))
         self.assertEqual([], report["errors"])
 
     def test_unknown_evidence_id_is_rejected(self) -> None:

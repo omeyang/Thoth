@@ -7,7 +7,7 @@
 - `question`：本页回答的一个核心问题，非空字符串。
 - `one_sentence`：不超过 100 字的无术语复述；不得包含 `banned_terms`。
 - `evidence`：至少一条。每项含唯一 `id`、实际读取过的 `source`、该来源支持的 `fact`，以及 `status=observed|verified|documented`。
-- `claims`：至少一条。每项含 `text` 与 `kind=fact|inference|hypothesis`；事实必须有 `evidence` 引用，推断/假设可没有引用；所有引用 ID 必须存在。
+- `claims`：至少一条。每项含 `text` 与 `kind=fact|inference|hypothesis`。求实门禁要求事实必须有 `evidence` 引用，所有引用 ID 必须存在；求是门禁要求推断/假设另有非空 `reasoning`（为什么这样推）与 `boundary`（何时不成立），它们可以没有证据引用。
 - `decision`：`needed=true` 时含 `question`、`owner`、至少两个 `options`；每项选项写 `name`、`consequence`、`cost` 和布尔值 `reversible`。`needed=false` 时用 `reason` 说明。
 - `teachback`：至少三题，每题含 `question`、`answer`、`misconception`；正式盲测应覆盖概念、对比、反例、决策、边界五类。
 

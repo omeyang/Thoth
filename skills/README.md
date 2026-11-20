@@ -1,16 +1,11 @@
 # Skills
 
-当前只维护两个技能，完整目录见 [CATALOG.md](CATALOG.md)。
+当前维护三个可独立安装、可组合使用的 Skill：
 
-```text
-skills/<name>/
-├── SKILL.md       必需，frontmatter 的 name 与目录一致
-├── references/    按需读取的方法与契约
-├── scripts/       可选，标准库审计工具
-├── templates/     可选，实际验收模板
-└── assets/        可选，真实示例资产
-```
+- `ui-craft`：视觉、交互和真实画面验收；
+- `explain-business-visually`：讲解、示例、场景与理解验收；
+- `verify-business-reality`：求实、求是、防幻觉与影响链核查。
 
-业务图解负责事实、理解和行动；UI 工艺负责视觉、交互和可用性。不要为增加数量而新建技能，也不要恢复旧综合插件结构。
+每个目录都以 `SKILL.md` 为入口，references 和 templates 按需加载。不要在正文假设另一个 Skill 一定已安装；组合是可选能力，单独使用必须完整可用。
 
-修改后通读 Skill 执行流程，检查 frontmatter、Markdown 本地链接与实际引用的参考文件；业务图解不引入命令行工具或强制 JSON 契约。
+修改后检查 frontmatter、Markdown 本地链接和触发描述，并在目标客户端分别测试单用与组合调用。

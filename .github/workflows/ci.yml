@@ -18,7 +18,7 @@ jobs:
 
           root = Path.cwd()
           errors = []
-          for name in ("explain-business-visually", "ui-craft"):
+          for name in ("explain-business-visually", "ui-craft", "verify-business-reality"):
               entry = root / "skills" / name / "SKILL.md"
               text = entry.read_text(encoding="utf-8")
               if not text.startswith("---\n") or f"name: {name}\n" not in text:

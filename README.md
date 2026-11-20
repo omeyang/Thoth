@@ -37,9 +37,7 @@ python3 scripts/package-skill.py ui-craft
 
 ```text
 skills/       两个技能及其实际使用的参考、脚本、模板和示例
-evals/        技能触发用例、三个内容 fixture、基线与验收记录
 scripts/      结构校验、目录生成、可复现打包和单元测试
-docs/         当前架构与决策记录
 .github/      CI 与泄漏扫描
 ```
 
@@ -51,7 +49,7 @@ python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 shellcheck scripts/*.sh
 ```
 
-详细验证范围和未验收项见 [`evals/explain-business-visually/verification.md`](evals/explain-business-visually/verification.md)。
+在提交说明中分别记录静态检查、浏览器验收和独立盲测的实际结果；未执行的项目明确标为未验证。
 
 ## 许可
 

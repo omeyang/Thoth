@@ -133,13 +133,6 @@ class AuditExplainerTest(unittest.TestCase):
         for rule in ("zoom", "duplicate-id", "empty-link", "autoplay"):
             self.assertTrue(any(rule in error for error in report["errors"]), rule)
 
-    def test_three_fixtures_pass(self) -> None:
-        fixtures = ROOT / "evals" / "explain-business-visually" / "fixtures"
-        for fixture in sorted(fixtures.iterdir()):
-            with self.subTest(fixture=fixture.name):
-                report = AUDIT.audit(fixture / "index.html", fixture / "content.json")
-                self.assertEqual([], report["errors"])
-
     def test_standalone_package_contains_shared_audit_and_templates(self) -> None:
         output = self.root / "dist"
         command = [sys.executable, str(ROOT / "scripts" / "package-skill.py"), "explain-business-visually", "--output", str(output)]

@@ -11,7 +11,7 @@ fm_field() {
         | sed -E 's/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/'
 }
 
-for legacy in .agents .claude-plugin .codex-plugin agents hooks mcp templates workflows; do
+for legacy in .agents .claude-plugin .codex-plugin agents docs evals hooks mcp templates workflows; do
     [ ! -e "$legacy" ] || err "旧架构目录不应存在：$legacy"
 done
 

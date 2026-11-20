@@ -22,9 +22,5 @@ jobs:
         run: |
           python3 scripts/package-skill.py ui-craft
           python3 scripts/package-skill.py explain-business-visually
-      - name: 示例与业务图解 fixture 审计
-        run: |
-          python3 skills/ui-craft/scripts/audit_ui.py --path skills/ui-craft/assets/technical-explainer.html --strict
-          for fixture in evals/explain-business-visually/fixtures/*; do
-            python3 skills/explain-business-visually/scripts/audit_explainer.py --page "$fixture/index.html" --manifest "$fixture/content.json"
-          done
+      - name: 技术讲解页示例审计
+        run: python3 skills/ui-craft/scripts/audit_ui.py --path skills/ui-craft/assets/technical-explainer.html --strict

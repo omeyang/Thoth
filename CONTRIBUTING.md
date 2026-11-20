@@ -23,7 +23,7 @@ python3 scripts/package-skill.py explain-business-visually
 python3 scripts/package-skill.py ui-craft
 ```
 
-如果修改了 fixture，再运行每个 `evals/explain-business-visually/fixtures/*/` 的 `audit_explainer.py`。更新 `verification.md` 时只记录实际执行结果。
+在提交说明或 PR 中只记录实际执行结果，不把静态审计或作者自测写成独立盲测。
 
 ## 提交信息
 
@@ -32,7 +32,7 @@ python3 scripts/package-skill.py ui-craft
 ```text
 refactor: 按理解目标重建仓库
 fix(explainer): 修正首屏术语检测
-test: 增加故障复盘 fixture
+test: 补充动画语义审计用例
 ```
 
 PR 需说明内容变化、删除的旧能力、实际验证和仍需人工验收的事项。

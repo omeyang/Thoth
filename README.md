@@ -52,7 +52,7 @@ https://github.com/omeyang/Thoth/tree/main/skills/ui-craft
 
 ### Kimi：只安装业务图解技能
 
-`explain-business-visually` 用于把真实业务问题做成有证据、有示例、有动画的决策说明页。下载 [ZIP 安装包](https://github.com/omeyang/Thoth/releases/latest/download/explain-business-visually.zip) 或 [.skill 安装包](https://github.com/omeyang/Thoth/releases/latest/download/explain-business-visually.skill)，也可以从 [技能目录](./skills/explain-business-visually/) 安装。
+`explain-business-visually` 用于把真实业务问题做成让陌生读者能复述、能决策、能指出边界的说明页。它先验证事实与 100 字无术语稿，再按理解卡点选择图示或动画，并用 teach-back 盲测验收。下载 [ZIP 安装包](https://github.com/omeyang/Thoth/releases/latest/download/explain-business-visually.zip) 或 [.skill 安装包](https://github.com/omeyang/Thoth/releases/latest/download/explain-business-visually.skill)，也可以从 [技能目录](./skills/explain-business-visually/) 安装。
 
 ### 项目模板
 

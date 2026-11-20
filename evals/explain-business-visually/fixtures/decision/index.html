@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>方案决策 fixture：先拆查询还是替换存储</title>
+  <style>
+    :root{--bg:#fbfaf7;--ink:#29241f;--muted:#6b6259;--line:#d8d0c6;--a:#e6efd5;--b:#f1dfd6}*{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 system-ui,"Microsoft YaHei",sans-serif}main{width:min(940px,calc(100% - 32px));margin:auto}section{padding:38px 0;border-bottom:1px solid var(--line)}
+    h1{font-size:clamp(32px,6vw,54px);line-height:1.15;margin:0 0 18px}.lede{font-size:20px;font-weight:650}.tag{color:var(--muted);font-size:13px}.options{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+    article{padding:22px;border:1px solid var(--line)}article:first-child{background:var(--a)}article:last-child{background:var(--b)}dt{font-weight:700}dd{margin:0 0 12px}
+    @media(max-width:600px){.options{grid-template-columns:1fr}}
+  </style>
+</head>
+<body><main>
+  <section data-first-screen><p class="tag">假设场景 · 两方案决策 fixture</p><h1>查询慢，就要换掉整个存储吗？</h1><p class="lede">订单量小、团队熟悉现有工具、只有查询变慢时，先拆最痛的查询更稳。</p><p>选择依据不是“哪种更先进”，而是改动范围、代价和能否撤回。</p></section>
+  <section id="constraints"><h2>本例只有这些事实</h2><ul><li>当前瓶颈只在查询，没有写入瓶颈证据。</li><li>订单量小，团队熟悉现有工具。</li><li>慢查询记录与数据增长趋势仍待补充。</li></ul><p>本页不使用 <dfn>CQRS</dfn> 作为说服理由；它只是一个可能需要解释的技术名称，不是场景适配证据。</p></section>
+  <section><h2>两个选项，放弃的东西不同</h2><div class="options"><article><h3>先拆最痛查询</h3><dl><dt>改变什么</dt><dd>只改慢查询路径。</dd><dt>代价</dt><dd>维护查询模型同步。</dd><dt>可逆性</dt><dd>可切回原查询，容易撤回。</dd></dl></article><article><h3>整体替换存储</h3><dl><dt>改变什么</dt><dd>全部读写一起迁移。</dd><dt>代价</dt><dd>迁移、回滚与培训成本更高。</dd><dt>可逆性</dt><dd>切换后难撤回。</dd></dl></article></div></section>
+  <section><h2>结论何时失效</h2><p>如果写入也成为瓶颈，或增长趋势表明局部方案很快失效，就应重新比较。没有找到这些反证，不代表它们不存在。</p></section>
+</main></body></html>

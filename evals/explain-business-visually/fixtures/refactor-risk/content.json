@@ -1,0 +1,29 @@
+{
+  "question": "新调用方会重试时，是否应先为旧写入逻辑增加防重复保护？",
+  "one_sentence": "一次请求被重复执行时，结果仍应保持一次执行的效果；是否改写旧逻辑，取决于新调用方是否会重试。",
+  "banned_terms": ["幂等键"],
+  "evidence": [
+    {"id": "E1", "source": "evals/explain-business-visually/fixtures/refactor-risk/index.html#assumptions", "fact": "本 fixture 将旧调用方不重试、新调用方会重试列为明确的假设前提。", "status": "documented"}
+  ],
+  "claims": [
+    {"text": "本例的旧系统没有暴露重复写入，是因为假设中的旧调用方不重试。", "kind": "fact", "evidence": ["E1"]},
+    {"text": "若新调用方可能重试，则需要先验证重复写入是否真实发生。", "kind": "inference"}
+  ],
+  "decision": {
+    "needed": true,
+    "question": "先加防重复保护，还是先补特征测试？",
+    "owner": "场景中的系统设计评审者",
+    "options": [
+      {"name": "先加保护", "consequence": "重复请求可保持一次执行结果", "cost": "需要保存并清理请求标识", "reversible": false},
+      {"name": "先补特征测试", "consequence": "先确认旧行为与重复执行缺口", "cost": "保护上线更晚", "reversible": true}
+    ],
+    "missing_evidence": ["真实重试频率与旧存储约束"]
+  },
+  "teachback": [
+    {"question": "为什么旧系统没有暴露这个问题？", "answer": "假设中的旧调用方不会重试。", "misconception": "把旧系统简单当成证据。"},
+    {"question": "新旧场景只差什么？", "answer": "新调用方会对结果不明的请求重试。", "misconception": "同时改变存储、流量和角色。"},
+    {"question": "什么情况不需要新增保护？", "answer": "写入本身已能安全去重或调用方不会重试。", "misconception": "认为所有写入都必须加同一机制。"},
+    {"question": "证据不足时先选什么？", "answer": "先补特征测试并确认真实缺口。", "misconception": "把通用最佳实践当成现实证据。"},
+    {"question": "这个 fixture 的结论边界是什么？", "answer": "它是假设场景，真实频率和存储约束尚未核验。", "misconception": "把示例当成线上事故。"}
+  ]
+}

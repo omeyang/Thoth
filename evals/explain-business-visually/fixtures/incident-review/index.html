@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>故障复盘 fixture：超时不等于未执行</title>
+  <style>
+    :root{--bg:#f4f6f7;--ink:#172126;--muted:#53636a;--warn:#ffe1a8;--ok:#d9eee4;--line:#bdc9ce}*{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 system-ui,"Microsoft YaHei",sans-serif}main{width:min(900px,calc(100% - 32px));margin:auto}
+    section{padding:38px 0;border-bottom:1px solid var(--line)}h1{font-size:clamp(32px,6vw,54px);line-height:1.15;margin:0 0 18px}.lede{font-size:20px;font-weight:650}
+    .wrong{background:var(--warn);padding:18px}.fact{background:var(--ok);padding:18px}.timeline{list-style:none;padding:0}.timeline li{display:grid;grid-template-columns:80px 1fr;gap:16px;padding:16px 0;border-top:1px solid var(--line)}
+    .tag{color:var(--muted);font-size:13px}@media(max-width:520px){.timeline li{grid-template-columns:1fr;gap:4px}}
+  </style>
+</head>
+<body><main>
+  <section data-first-screen><p class="tag">假设场景 · 故障复盘 fixture</p><h1>超时，不代表服务没有执行</h1><p class="lede">调用方没等到答案，与服务没有完成动作，是两件不同的事。</p><p>决策：立即重试，还是先查询执行状态？</p></section>
+  <section><h2>先纠正最常见的归因</h2><p class="wrong"><strong>错误：</strong>页面显示超时，所以订单一定没有创建。</p><p class="fact"><strong>反证：</strong>执行记录显示订单已经写入，丢失的是响应，不是动作。</p></section>
+  <section id="counter-evidence"><h2>按时间重建，而不是猜</h2><ol class="timeline"><li><strong>第 1 步</strong><span>请求到达服务，订单尚未写入；因为服务收到动作，所以开始处理。</span></li><li><strong>第 2 步</strong><span>订单写入完成，调用方仍在等待；因为处理已完成，所以执行记录出现。</span></li><li><strong>第 3 步</strong><span>响应未能及时返回，调用方超时；因为结果没有到达，所以调用方无法区分“未执行”和“已执行”。</span></li></ol></section>
+  <section><h2>选择取决于重复动作的代价</h2><p><strong>先查状态：</strong>多一次查询，但能撤回后续动作，避免重复创建。</p><p><strong>立即重试：</strong>未执行时恢复更快；已执行时可能产生第二笔订单，事后撤回更贵。</p><p>只有确认动作未执行，或重复执行不会改变结果时，本例的“先查状态”才不是必需。</p></section>
+</main></body></html>

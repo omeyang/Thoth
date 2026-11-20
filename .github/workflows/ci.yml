@@ -20,11 +20,16 @@ jobs:
         run: scripts/validate.sh
       - name: shellcheck
         run: shellcheck hooks/scripts/*.sh scripts/*.sh
-      - name: UI Skill 审计、打包与示例检查
+      - name: UI 与业务图解 Skill 审计、打包和回归
         run: |
           python3 -m unittest discover -s scripts/tests -p 'test_ui_craft*.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_explain_business_visually*.py' -v
           python3 scripts/package-skill.py ui-craft
+          python3 scripts/package-skill.py explain-business-visually
           python3 skills/ui-craft/scripts/audit_ui.py --path skills/ui-craft/assets/technical-explainer.html --strict
+          for fixture in evals/explain-business-visually/fixtures/*; do
+            python3 skills/explain-business-visually/scripts/audit_explainer.py --page "$fixture/index.html" --manifest "$fixture/content.json"
+          done
       - name: 插件清单校验
         run: |
           npm install -g @anthropic-ai/claude-code

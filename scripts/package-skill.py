@@ -46,8 +46,11 @@ def validate(skill: Path) -> None:
     for path in skill.rglob("*"):
         if path.is_symlink():
             raise ValueError(f"安装包不允许符号链接：{path}")
-        if path.is_file() and path.relative_to(skill).parts[0] not in {"scripts", "references", "assets"} and path.name != "SKILL.md":
+        if path.is_file() and path.relative_to(skill).parts[0] not in {"scripts", "references", "assets", "templates"} and path.name != "SKILL.md":
             raise ValueError(f"Skill 根目录含非标准文件：{path}")
+    for source, _ in shared_files(skill):
+        if not source.is_file() or source.is_symlink():
+            raise ValueError(f"共享依赖不存在或不允许符号链接：{source}")
 
 
 def files(skill: Path) -> list[Path]:
@@ -57,10 +60,18 @@ def files(skill: Path) -> list[Path]:
     ]
 
 
+def shared_files(skill: Path) -> list[tuple[Path, Path]]:
+    """Inject shared source into standalone archives without maintaining a copy."""
+    if skill.name == "explain-business-visually":
+        return [(ROOT / "skills" / "ui-craft" / "scripts" / "html_hygiene.py", Path("scripts/html_hygiene.py"))]
+    return []
+
+
 def write_archive(skill: Path, output: Path) -> None:
+    entries = [(path, path.relative_to(skill)) for path in files(skill)] + shared_files(skill)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for path in files(skill):
-            relative = Path(skill.name) / path.relative_to(skill)
+        for path, target in sorted(entries, key=lambda entry: entry[1].as_posix()):
+            relative = Path(skill.name) / target
             info = zipfile.ZipInfo(relative.as_posix(), date_time=(2020, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16

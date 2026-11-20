@@ -8,3 +8,5 @@ claude plugin eval . --trust-plugin --json out.json --threshold 0.8   # CI
 ```
 
 用例目录：`prompt.md`（frontmatter + 提问）与 `graders/*.md`（一文件一判定）。行为类用例（检查产出内容）按需追加到同一目录，判定类型见官方文档。`results/` 已加入 `.gitignore`。
+
+`explain-business-visually/fixtures/` 另含重构风险、故障复盘、方案决策三个静态回归 fixture，由 `scripts/tests/test_explain_business_visually.py` 和 CI 审计。它们均为明确标注的假设场景；自动通过不等于 teach-back 盲测通过。

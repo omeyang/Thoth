@@ -1,43 +1,37 @@
-# 架构
+# 当前架构
 
-Thoth 是一个插件仓库：仓库根目录同时是 Claude Code 插件（`.claude-plugin/`）和 Codex 插件（`.codex-plugin/`），两者共用同一批组件。`ui-craft` 与 `explain-business-visually` 另提供独立安装包，供 ChatGPT、Kimi 等支持 Agent Skills 的客户端使用。
+Thoth 是纯 Agent Skills 仓库，只包含两个职责不同的技能。旧版综合插件架构已在 2026-11-20 的全面重写中移除，历史可从 Git 提交 `d791748` 之前的版本读取。
 
-| 目录 | 角色 | 装载方式 |
-|------|------|---------|
-| `skills/` | 29 个技能，每目录一个 `SKILL.md`，长示例放 `references/` | 插件自动装载，`/thoth:<name>`（Codex `$<name>`） |
-| `agents/` | 5 个子代理，`agents/<name>.md` | Claude Code 插件自动装载；Codex 见 `templates/AGENTS.md` |
-| `hooks/` | `hooks.json` + 7 个脚本 | 插件自动装载；Codex 复用脚本 |
-| `mcp/` | 项目级 `.mcp.json` 模板 | 复制到目标项目 |
-| `templates/` | `CLAUDE.md`、`.claude/rules/go.md`、`AGENTS.md` 模板 | 复制到目标项目 |
-| `workflows/` | 两个脚本型工作流：adversarial-review、design-review | `THOTH_HOME` 定位，pre-commit / cron 调用 |
-| `evals/` | `claude plugin eval` 用例 | 本地或 CI 手动运行 |
-| `scripts/` | `validate.sh`、`gen-catalog.sh`、`package-skill.py`、`sync-wiki.sh` | 维护者运行 |
-| `docs/` | 架构、路线图、命名规范、设计文档与实施计划 | 阅读；`sync-wiki.sh` 同步到 Wiki |
+## 组件
 
-## 边界
+```text
+explain-business-visually
+├── SKILL.md                  三层模型与四步入口
+├── references/               事实、教学、六字段契约、视觉门禁
+├── scripts/audit_explainer.py 内容与动画语义审计
+└── templates/                证据台账、teach-back、评分表
 
-- **工程标准不在本仓库定义。** [Maat](https://github.com/omeyang/Maat) 是唯一的标准来源，技能与工作流只引用、不复制。
-- **项目与企业专属内容不在本仓库。** design-review 的 profile 与 reqloop 的 adapter 按 `$THOTH_PROFILES` → `~/.config/thoth/profiles` → 内置目录的顺序加载，仓库只保留通用引擎与 lite 适配器。
-- **单一基线。** Go 固定 go1.24.6，库版本钉在该工具链可用的最新版；不写多版本兼容说明。
-- **插件支持两个宿主。** Claude Code 与 Codex 共享完整插件。独立 Skill 安装包只携带所选技能，不安装 Hook、子代理或其他 IDE 适配。
-
-## 组件关系
-
-```
-插件（skills + agents + hooks）
-    ├── 技能：领域知识与流程，可被模型自动选用或用户显式调用
-    ├── 子代理：角色化执行体，frontmatter 用 skills: 预载技能
-    └── 钩子：会话上下文、危险命令与凭证拦截、Go 格式化 / lint / 测试
-独立 Skill（ui-craft / explain-business-visually）
-    └── 同一目录打包为 .zip / .skill，供支持上传技能的客户端安装
-脚本工作流（workflows/）
-    ├── adversarial-review：Claude×2 + Codex×2 审 diff，挂 pre-commit
-    └── design-review：4 队多轮对抗审设计文档，cron 批处理
-项目模板（mcp/ templates/）：复制到目标仓库
+ui-craft
+├── SKILL.md                  视觉与交互入口
+├── references/               设计、交互、评审方法
+├── assets/                   可交互技术讲解页示例
+└── scripts/
+    ├── html_hygiene.py       唯一共享 HTML 卫生层
+    └── audit_ui.py           UI 审计命令行
 ```
 
-## 设计目标
+`audit_explainer.py` 在源码仓库中读取 `ui-craft` 的共享模块；构建独立业务图解包时，`package-skill.py` 将该模块注入其 `scripts/`。不维护第二份复制实现。
 
-- 跨宿主：同一份技能同时服务 Claude Code 与 Codex（agentskills.io 规范）；独立包复用同一来源，不维护分叉副本。
-- 最小耦合：每个目录可独立阅读与使用；工作流通过路径引用组件。
-- 可验证：`scripts/validate.sh` 校验结构，`claude plugin validate --strict` 校验清单，bats + shellcheck 校验脚本，Python unittest 校验 UI 审计与打包，evals 校验技能触发。
+## 验收边界
+
+| 层 | 工具 | 能证明什么 | 不能证明什么 |
+| --- | --- | --- | --- |
+| 契约与 HTML | 单元测试、两个审计器 | 字段自洽、引用存在、静态硬错误 | 读者已经理解 |
+| 真实画面 | Chromium、桌面/375px 截图、交互走查 | 页面实际呈现与操作结果 | 业务事实正确 |
+| 理解 | 独立 teach-back 盲测与评分表 | 读者能复述、决策、指出边界 | 未覆盖场景都正确 |
+
+三个 fixture 是明确标注的假设场景，只用于回归技能机制，不充当生产证据。
+
+## 已删除的旧边界
+
+仓库不再包含 Claude/Codex 插件清单、Go 与中间件技能、子代理、Git Hooks、MCP 配置、项目模板、定时审查工作流或 Wiki 同步。`scripts/validate.sh` 会阻止这些旧根目录被无意恢复。

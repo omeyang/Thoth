@@ -1,12 +1,11 @@
-# evals
+# Evals
 
-`claude plugin eval` 用例。每个技能一个触发用例（`trigger-<skill>/`）：用用户会说的话提问，检查模型是否选中了对应技能。
+`trigger-explain-business-visually/` 检查自然语言请求是否选择业务图解技能。支持 `claude plugin eval` 的环境可按其官方方式运行该用例；当前仓库本身不再携带 Claude 插件清单。
 
-```bash
-claude plugin eval . --tag trigger --runs 1          # 本地快速跑一遍
-claude plugin eval . --trust-plugin --json out.json --threshold 0.8   # CI
-```
+`explain-business-visually/fixtures/` 包含三个明确标注的假设场景：
 
-用例目录：`prompt.md`（frontmatter + 提问）与 `graders/*.md`（一文件一判定）。行为类用例（检查产出内容）按需追加到同一目录，判定类型见官方文档。`results/` 已加入 `.gitignore`。
+- `refactor-risk`：历史意图、前提变化和近误对比；
+- `incident-review`：错误归因、反证和三步时间线；
+- `decision`：选项、代价、可逆性和证据缺口。
 
-`explain-business-visually/fixtures/` 另含重构风险、故障复盘、方案决策三个静态回归 fixture，由 `scripts/tests/test_explain_business_visually.py` 和 CI 审计。它们均为明确标注的假设场景；自动通过不等于 teach-back 盲测通过。
+它们由 `scripts/tests/test_explain_business_visually.py` 与 CI 自动审计。`baseline.md` 记录旧版基线，`verification.md` 只记录实际执行结果。fixture 通过不等于独立 teach-back 盲测通过。

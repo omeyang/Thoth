@@ -1,6 +1,4 @@
 node_modules/
-.adversarial-runs/
-.design-review-runs/
 evals/results/
 dist/
 __pycache__/

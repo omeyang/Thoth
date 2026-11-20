@@ -1,3 +1,0 @@
-# .shellcheckrc — design-review workflow shell 静态检查
-disable=SC1090,SC1091
-external-sources=true

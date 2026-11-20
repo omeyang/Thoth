@@ -5,11 +5,11 @@
 ## 自动检查
 
 - `python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v`：17 项通过。
-- `scripts/validate.sh`：29 个技能通过。
+- `scripts/validate.sh`：2 个核心技能通过，旧架构目录确认不存在。
 - `python3 skills/ui-craft/scripts/audit_ui.py --path skills/ui-craft/assets/technical-explainer.html --strict`：0 errors，0 warnings。
 - 三个 `evals/explain-business-visually/fixtures/*/`：六字段契约与共享 HTML 卫生审计全部通过。
 - 两个技能的 `.zip` / `.skill`：打包成功；业务图解独立包包含共享审计模块与 templates。
-- `shellcheck hooks/scripts/*.sh scripts/*.sh` 与 `git diff --check`：通过。
+- `shellcheck scripts/*.sh` 与 `git diff --check`：通过。
 
 ## 真实浏览器
 

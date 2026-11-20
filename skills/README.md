@@ -1,28 +1,16 @@
-# skills
+# Skills
 
-Thoth 插件的技能。完整列表见 [CATALOG.md](CATALOG.md)（由 `scripts/gen-catalog.sh` 生成）。
-
-## 结构
+当前只维护两个技能，完整目录见 [CATALOG.md](CATALOG.md)。
 
 ```text
 skills/<name>/
-├── SKILL.md          # 必需，≤ 500 行：决策、要点、检查清单
-└── references/       # 完整代码示例与长篇资料，按需读取
+├── SKILL.md       必需，frontmatter 的 name 与目录一致
+├── references/    按需读取的方法与契约
+├── scripts/       可选，标准库审计工具
+├── templates/     可选，实际验收模板
+└── assets/        可选，真实示例资产
 ```
 
-## frontmatter
+业务图解负责事实、理解和行动；UI 工艺负责视觉、交互和可用性。不要为增加数量而新建技能，也不要恢复旧综合插件结构。
 
-```yaml
----
-name: kafka-go                       # 与目录名一致
-description: "<能力>. 适用：<场景>. 不适用：<反模式>. 触发词：<关键词>"   # ≤ 1024 字符
-argument-hint: "<可选>"
----
-```
-
-## 规则
-
-- 单一基线 go1.24.6；库版本在技能正文写明，取该工具链可用的最新版。
-- 示例只用上游库，不引用私有库。
-- 中文正文，英文标识符。
-- 新增或删除技能后运行 `scripts/gen-catalog.sh`，并通过 `scripts/validate.sh`。
+修改后运行 `scripts/gen-catalog.sh`、`scripts/validate.sh` 和全部 Python 单元测试。

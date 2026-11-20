@@ -1,29 +1,38 @@
 # 贡献指南
 
-## 提交 PR 前
+## 当前边界
 
-- 目录约定见 [docs/architecture.md](docs/architecture.md)，命名见 [docs/naming-conventions.md](docs/naming-conventions.md)。
-- 新增或删除技能后运行 `scripts/gen-catalog.sh` 重新生成 `skills/CATALOG.md`。
-- 运行 `scripts/validate.sh` 与 `claude plugin validate . --strict`。
-- 修改 `hooks/scripts/` 或 `scripts/` 后运行 `shellcheck`。
-- 修改 `workflows/adversarial-review` 或 `workflows/design-review` 后运行 `make -C workflows/<name> lint test`。
-- 修改 `ui-craft` 或打包脚本后运行 `python -m unittest discover -s scripts/tests -p 'test_ui_craft*.py' -v`，并检查示例页与安装包。
-- 技能内容遵守单一基线：go1.24.6，库版本以技能里写明的版本为准，不引用私有库；UI 技能不引入私有素材或未归因的上游内容。
-- 本地验证插件：`claude --plugin-dir .`，在会话里确认 `/thoth:<skill>` 可见。
+Thoth 只维护 `explain-business-visually` 与 `ui-craft`。不要重新引入旧的 Go 技能、代理、Hook、MCP 模板或脚本工作流；新机制必须对应一个明确的读者失败模式或视觉验证缺口。
+
+## 修改原则
+
+- 业务事实必须有实际读取过的来源；推断和假设明确标记。
+- 不为通过审计而增加字段、示例、动画或文档。
+- 修改共享 HTML 卫生层时，同时运行两个技能的测试和独立包检查。
+- 修改页面后实测桌面与 375px；有控件时走键盘和减少动态效果路径。
+- 自动检查不能代替独立 teach-back 盲测，未执行就写“未验证”。
+
+## 提交前
+
+```bash
+scripts/gen-catalog.sh
+scripts/validate.sh
+python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+shellcheck scripts/*.sh
+python3 scripts/package-skill.py explain-business-visually
+python3 scripts/package-skill.py ui-craft
+```
+
+如果修改了 fixture，再运行每个 `evals/explain-business-visually/fixtures/*/` 的 `audit_explainer.py`。更新 `verification.md` 时只记录实际执行结果。
 
 ## 提交信息
 
-Conventional Commits，与 `hooks/scripts/commit-lint.sh` 的检查一致：
+使用 Conventional Commits，例如：
 
 ```text
-feat(design-review): 每队 5 角色扇出
-fix(kafka-go): DLQ 示例补齐 header 传播
-docs: 更新技能目录
+refactor: 按理解目标重建仓库
+fix(explainer): 修正首屏术语检测
+test: 增加故障复盘 fixture
 ```
 
-## PR 检查清单
-
-- [ ] 目的和范围清晰
-- [ ] 文档已更新（README、CATALOG、对应目录 README）
-- [ ] `scripts/validate.sh` 通过
-- [ ] 脚本型改动的 lint 与 bats 通过
+PR 需说明内容变化、删除的旧能力、实际验证和仍需人工验收的事项。

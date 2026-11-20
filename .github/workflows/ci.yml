@@ -11,7 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 检查 Skill 结构与 Markdown 本地链接
-        run: python3 - <<'PY'
+        run: |
+          python3 - <<'PY'
           import re
           import sys
           from pathlib import Path

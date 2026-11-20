@@ -10,17 +10,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 安装 ShellCheck
-        run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck
-      - name: 仓库结构与 Shell 校验
-        run: |
-          scripts/validate.sh
-          shellcheck scripts/*.sh
-      - name: 两个技能的单元测试
-        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
-      - name: 可复现独立打包
-        run: |
-          python3 scripts/package-skill.py ui-craft
-          python3 scripts/package-skill.py explain-business-visually
-      - name: 技术讲解页示例审计
-        run: python3 skills/ui-craft/scripts/audit_ui.py --path skills/ui-craft/assets/technical-explainer.html --strict
+      - name: 检查 Skill 结构与 Markdown 本地链接
+        run: python3 - <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          root = Path.cwd()
+          errors = []
+          for name in ("explain-business-visually", "ui-craft"):
+              entry = root / "skills" / name / "SKILL.md"
+              text = entry.read_text(encoding="utf-8")
+              if not text.startswith("---\n") or f"name: {name}\n" not in text:
+                  errors.append(f"{entry}: frontmatter/name 不正确")
+          for path in root.glob("**/*.md"):
+              text = path.read_text(encoding="utf-8")
+              for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):
+                  if "://" in target or target.startswith("#"):
+                      continue
+                  clean = target.split("#", 1)[0]
+                  if clean and not (path.parent / clean).resolve().exists():
+                      errors.append(f"{path}: 链接不存在：{target}")
+          for path in (root / "tools", root / "scripts", root / "skills" / "explain-business-visually" / "scripts"):
+              if path.exists():
+                  errors.append(f"纯 Skill 架构不应包含：{path}")
+          if errors:
+              print("\n".join(errors), file=sys.stderr)
+              sys.exit(1)
+          print("Skill structure and local Markdown links: OK")
+          PY

@@ -1,6 +1,6 @@
 # 技能包目录
 
-技能包总数：2（由 `scripts/gen-catalog.sh` 生成，不要手改）
+技能包总数：2（与当前技能目录保持一致）
 
 安装插件后按 `/thoth:<name>` 调用（Codex 为 `$<name>`）。
 

@@ -12,8 +12,11 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SHARED_DIR = SCRIPT_DIR if (SCRIPT_DIR / "html_hygiene.py").is_file() else SCRIPT_DIR.parent.parent / "ui-craft" / "scripts"
+GATES_DIR = SCRIPT_DIR if (SCRIPT_DIR / "manifest_gates.py").is_file() else SCRIPT_DIR.parents[2] / "tools"
 sys.path.insert(0, str(SHARED_DIR))
+sys.path.insert(0, str(GATES_DIR))
 from html_hygiene import run as audit_hygiene  # noqa: E402
+from manifest_gates import check_content_risks, check_facts, check_reasoning, require_fields  # noqa: E402
 
 
 class ContentParser(HTMLParser):
@@ -79,25 +82,6 @@ def nonempty(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def require_fields(errors: list[str], value: object, fields: list[str], prefix: str) -> None:
-    if not isinstance(value, dict):
-        errors.append(f"{prefix} 必须是对象")
-        return
-    for field in fields:
-        if not nonempty(value.get(field)):
-            errors.append(f"{prefix}.{field} 缺失或为空")
-
-
-def validate_references(errors: list[str], item: dict[str, object], evidence_ids: set[str], prefix: str, required: bool) -> None:
-    refs = item.get("evidence")
-    if not isinstance(refs, list) or (required and not refs):
-        errors.append(f"{prefix}.evidence {'至少引用一个证据 ID' if required else '必须是数组'}")
-        return
-    for ref in refs:
-        if ref not in evidence_ids:
-            errors.append(f"{prefix} 引用了不存在的证据：{ref}")
-
-
 def audit(page_path: str | Path, manifest_path: str | Path) -> dict[str, object]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -114,74 +98,15 @@ def audit(page_path: str | Path, manifest_path: str | Path) -> dict[str, object]
     if not isinstance(data, dict):
         return {"page": str(page_path), "manifest": str(manifest_path), "errors": ["content.json 顶层必须是对象"], "warnings": warnings}
 
-    for field in ("question", "one_sentence"):
-        if not nonempty(data.get(field)):
-            errors.append(f"{field} 缺失或为空")
-    sentence = data.get("one_sentence")
-    if nonempty(sentence) and len(re.sub(r"\s+", "", sentence)) > 100:
-        errors.append("one_sentence 超过 100 字")
-
+    # Reuse exactly the same 求实、求是、防幻觉 gates as the standalone tools.
+    errors.extend(check_facts(data))
+    errors.extend(check_reasoning(data))
+    errors.extend(check_content_risks(data))
+    evidence = data.get("evidence") if isinstance(data.get("evidence"), list) else []
+    claims = data.get("claims") if isinstance(data.get("claims"), list) else []
     banned = data.get("banned_terms", [])
-    if not isinstance(banned, list) or any(not nonempty(term) for term in banned):
-        errors.append("banned_terms 必须是非空字符串数组")
+    if not isinstance(banned, list):
         banned = []
-    for term in banned:
-        if nonempty(sentence) and term.casefold() in sentence.casefold():
-            errors.append(f"one_sentence 含禁用术语：{term}")
-
-    evidence = data.get("evidence")
-    evidence_ids: set[str] = set()
-    if not isinstance(evidence, list) or not evidence:
-        errors.append("evidence 至少需要一条")
-        evidence = []
-    for index, item in enumerate(evidence):
-        prefix = f"evidence[{index}]"
-        require_fields(errors, item, ["id", "source", "fact", "status"], prefix)
-        if not isinstance(item, dict):
-            continue
-        if item.get("status") not in {"observed", "verified", "documented"}:
-            errors.append(f"{prefix}.status 必须是 observed/verified/documented")
-        evidence_id = item.get("id")
-        if nonempty(evidence_id):
-            if evidence_id in evidence_ids:
-                errors.append(f"{prefix}.id 重复：{evidence_id}")
-            evidence_ids.add(evidence_id)
-
-    claims = data.get("claims")
-    if not isinstance(claims, list) or not claims:
-        errors.append("claims 至少需要一条")
-        claims = []
-    for index, item in enumerate(claims):
-        prefix = f"claims[{index}]"
-        require_fields(errors, item, ["text", "kind"], prefix)
-        if not isinstance(item, dict):
-            continue
-        kind = item.get("kind")
-        if kind not in {"fact", "inference", "hypothesis"}:
-            errors.append(f"{prefix}.kind 必须是 fact/inference/hypothesis")
-        if "evidence" in item or kind == "fact":
-            validate_references(errors, item, evidence_ids, prefix, kind == "fact")
-        if kind in {"inference", "hypothesis"}:
-            require_fields(errors, item, ["reasoning", "boundary"], prefix)
-
-    decision = data.get("decision")
-    if not isinstance(decision, dict) or not isinstance(decision.get("needed"), bool):
-        errors.append("decision.needed 必须是布尔值")
-    elif decision["needed"]:
-        require_fields(errors, decision, ["question", "owner"], "decision")
-        options = decision.get("options")
-        if not isinstance(options, list) or len(options) < 2:
-            errors.append("decision.options 至少需要两个真实选项")
-        else:
-            for index, option in enumerate(options):
-                prefix = f"decision.options[{index}]"
-                require_fields(errors, option, ["name", "consequence", "cost"], prefix)
-                if isinstance(option, dict) and not isinstance(option.get("reversible"), bool):
-                    errors.append(f"{prefix}.reversible 必须是布尔值")
-        if "missing_evidence" in decision and not isinstance(decision["missing_evidence"], list):
-            errors.append("decision.missing_evidence 必须是数组")
-    elif not nonempty(decision.get("reason")):
-        errors.append("decision 不需要人工决策时必须用 reason 说明")
 
     teachback = data.get("teachback")
     if not isinstance(teachback, list) or len(teachback) < 3:

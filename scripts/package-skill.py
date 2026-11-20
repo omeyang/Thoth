@@ -63,7 +63,10 @@ def files(skill: Path) -> list[Path]:
 def shared_files(skill: Path) -> list[tuple[Path, Path]]:
     """Inject shared source into standalone archives without maintaining a copy."""
     if skill.name == "explain-business-visually":
-        return [(ROOT / "skills" / "ui-craft" / "scripts" / "html_hygiene.py", Path("scripts/html_hygiene.py"))]
+        return [
+            (ROOT / "skills" / "ui-craft" / "scripts" / "html_hygiene.py", Path("scripts/html_hygiene.py")),
+            (ROOT / "tools" / "manifest_gates.py", Path("scripts/manifest_gates.py")),
+        ]
     return []
 
 

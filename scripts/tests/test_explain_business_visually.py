@@ -150,6 +150,7 @@ class AuditExplainerTest(unittest.TestCase):
         with zipfile.ZipFile(archive_path) as archive:
             names = archive.namelist()
             self.assertIn("explain-business-visually/scripts/html_hygiene.py", names)
+            self.assertIn("explain-business-visually/scripts/manifest_gates.py", names)
             self.assertIn("explain-business-visually/templates/teachback.md", names)
             self.assertNotIn("explain-business-visually/references/content-quality.md", names)
             archive.extractall(self.root / "unpacked")

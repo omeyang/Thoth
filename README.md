@@ -35,10 +35,28 @@ python3 scripts/package-skill.py ui-craft
 
 没有动画的页面不需要播放器。自动审计通过不等于读者已经理解。
 
+## 三个独立工具
+
+不需要生成 HTML，也不需要调用技能，直接对 `content.json` 执行：
+
+```bash
+# 求实：事实与证据引用；加 --root 可核验来源文件和行号
+python3 tools/verify_facts.py --manifest /path/content.json --root /path/project
+
+# 求是：推断/假设的推理依据、失效边界与决策代价
+python3 tools/check_reasoning.py --manifest /path/content.json
+
+# 防幻觉：组合求实、求是、占位符与禁用术语检查
+python3 tools/check_hallucination.py --manifest /path/content.json --root /path/project
+```
+
+三者均输出 JSON，发现错误时退出码为 1。防幻觉工具只报告可静态检查的风险，通过不代表绝对不存在幻觉。
+
 ## 仓库结构
 
 ```text
 skills/       两个技能及其实际使用的参考、脚本、模板和示例
+tools/        求实、求是、防幻觉独立命令及共用内核
 scripts/      结构校验、目录生成、可复现打包和单元测试
 .github/      CI 与泄漏扫描
 ```

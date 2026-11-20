@@ -18,6 +18,9 @@ done
 for required in explain-business-visually ui-craft; do
     [ -d "skills/$required" ] || err "缺少当前核心技能：$required"
 done
+for tool in verify_facts.py check_reasoning.py check_hallucination.py manifest_gates.py; do
+    [ -f "tools/$tool" ] || err "缺少独立门禁工具：tools/$tool"
+done
 
 for dir in skills/*/; do
     name=${dir%/}; name=${name#skills/}
